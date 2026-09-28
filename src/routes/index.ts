@@ -1,37 +1,60 @@
-import { Router } from 'express';
+import { Router, Response } from 'express';
 import authRoutes from './auth.routes';
-import { authenticate } from '../middleware/auth';
+import { authenticate, AuthRequest } from '../middleware/auth';
 import { asyncHandler } from '../middleware/errorHandler';
-import { AuthRequest } from '../middleware/auth';
-import { Response } from 'express';
+
 import * as dashboardService from '../services/dashboard.service';
 import * as customersService from '../services/customers.service';
 import * as itemsService from '../services/items.service';
 import * as salesService from '../services/sales.service';
-import { customerSchema, itemSchema, saleSchema, paginationSchema } from '../validators/common';
+
+import {
+  customerSchema,
+  itemSchema,
+  saleSchema,
+  paginationSchema,
+} from '../validators/common';
 
 const router = Router();
 
 router.use('/auth', authRoutes);
 
-// Dashboard
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
 router.get(
   '/dashboard',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await dashboardService.getDashboard(req.businessId!);
-    res.json({ success: true, data });
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
-// Customers
+/* =========================================================
+   CUSTOMERS
+========================================================= */
+
 router.get(
   '/customers',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
-    const data = await customersService.listCustomers(req.businessId!, query);
-    res.json({ success: true, ...data });
+
+    const data = await customersService.listCustomers(
+      req.businessId!,
+      query
+    );
+
+    res.json({
+      success: true,
+      ...data,
+    });
   })
 );
 
@@ -40,8 +63,17 @@ router.post(
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = customerSchema.parse(req.body);
-    const data = await customersService.createCustomer(req.businessId!, body, req.user?.userId);
-    res.status(201).json({ success: true, data });
+
+    const data = await customersService.createCustomer(
+      req.businessId!,
+      body,
+      req.user?.userId
+    );
+
+    res.status(201).json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -49,8 +81,17 @@ router.get(
   '/customers/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await customersService.getCustomer(req.businessId!, req.params.id);
-    res.json({ success: true, data });
+    const id = String(req.params.id);
+
+    const data = await customersService.getCustomer(
+      req.businessId!,
+      id
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -58,14 +99,20 @@ router.patch(
   '/customers/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
     const body = customerSchema.partial().parse(req.body);
+
     const data = await customersService.updateCustomer(
       req.businessId!,
-      req.params.id,
+      id,
       body,
       req.user?.userId
     );
-    res.json({ success: true, data });
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -73,27 +120,52 @@ router.delete(
   '/customers/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
+
     const data = await customersService.deleteCustomer(
       req.businessId!,
-      req.params.id,
+      id,
       req.user?.userId
     );
-    res.json({ success: true, data });
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
-// Items
+/* =========================================================
+   ITEMS
+========================================================= */
+
 router.get(
   '/items',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
-    const data = await itemsService.listItems(req.businessId!, {
-      ...query,
-      categoryId: req.query.categoryId as string,
-      lowStock: req.query.lowStock === 'true',
+
+    const categoryId =
+      typeof req.query.categoryId === 'string'
+        ? req.query.categoryId
+        : undefined;
+
+    const lowStock =
+      req.query.lowStock === 'true';
+
+    const data = await itemsService.listItems(
+      req.businessId!,
+      {
+        ...query,
+        categoryId,
+        lowStock,
+      }
+    );
+
+    res.json({
+      success: true,
+      ...data,
     });
-    res.json({ success: true, ...data });
   })
 );
 
@@ -102,8 +174,17 @@ router.post(
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = itemSchema.parse(req.body);
-    const data = await itemsService.createItem(req.businessId!, body, req.user?.userId);
-    res.status(201).json({ success: true, data });
+
+    const data = await itemsService.createItem(
+      req.businessId!,
+      body,
+      req.user?.userId
+    );
+
+    res.status(201).json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -111,17 +192,46 @@ router.get(
   '/items/barcode/:barcode',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await itemsService.searchByBarcode(req.businessId!, req.params.barcode);
+    const barcode = String(req.params.barcode);
+
+    const data = await itemsService.searchByBarcode(
+      req.businessId!,
+      barcode
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
+  })
+);
+router.get(
+  '/items/code/:sku',
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await itemsService.searchBySku(
+      req.businessId!,
+      String(req.params.sku)
+    );
+
     res.json({ success: true, data });
   })
 );
-
 router.get(
   '/items/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await itemsService.getItem(req.businessId!, req.params.id);
-    res.json({ success: true, data });
+    const id = String(req.params.id);
+
+    const data = await itemsService.getItem(
+      req.businessId!,
+      id
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -129,14 +239,20 @@ router.patch(
   '/items/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
     const body = itemSchema.partial().parse(req.body);
+
     const data = await itemsService.updateItem(
       req.businessId!,
-      req.params.id,
+      id,
       body,
       req.user?.userId
     );
-    res.json({ success: true, data });
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -144,8 +260,18 @@ router.delete(
   '/items/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await itemsService.deleteItem(req.businessId!, req.params.id, req.user?.userId);
-    res.json({ success: true, data });
+    const id = String(req.params.id);
+
+    const data = await itemsService.deleteItem(
+      req.businessId!,
+      id,
+      req.user?.userId
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -153,32 +279,77 @@ router.post(
   '/items/:id/adjust-stock',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const { quantity, reason, notes } = req.body;
+    const id = String(req.params.id);
+
+    const {
+      quantity,
+      reason,
+      notes,
+    } = req.body;
+
     const data = await itemsService.adjustStock(
       req.businessId!,
-      req.params.id,
+      id,
       quantity,
       reason,
       notes,
       req.user?.userId
     );
-    res.json({ success: true, data });
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
-// Sales
+/* =========================================================
+   SALES
+========================================================= */
+
 router.get(
   '/sales',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
-    const data = await salesService.getSales(req.businessId!, {
-      ...query,
-      status: req.query.status as string,
-      from: req.query.from ? new Date(req.query.from as string) : undefined,
-      to: req.query.to ? new Date(req.query.to as string) : undefined,
+
+    const status =
+      typeof req.query.status === 'string'
+        ? req.query.status
+        : undefined;
+
+    const from =
+      typeof req.query.from === 'string'
+        ? new Date(req.query.from)
+        : undefined;
+
+    const to =
+      typeof req.query.to === 'string'
+        ? new Date(req.query.to)
+        : undefined;
+
+    if (from && Number.isNaN(from.getTime())) {
+      throw new Error('Invalid from date');
+    }
+
+    if (to && Number.isNaN(to.getTime())) {
+      throw new Error('Invalid to date');
+    }
+
+    const data = await salesService.getSales(
+      req.businessId!,
+      {
+        ...query,
+        status,
+        from,
+        to,
+      }
+    );
+
+    res.json({
+      success: true,
+      ...data,
     });
-    res.json({ success: true, ...data });
   })
 );
 
@@ -187,11 +358,19 @@ router.post(
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = saleSchema.parse(req.body);
-    const data = await salesService.createSale(req.businessId!, {
-      ...body,
-      createdById: req.user?.userId,
+
+    const data = await salesService.createSale(
+      req.businessId!,
+      {
+        ...body,
+        createdById: req.user?.userId,
+      }
+    );
+
+    res.status(201).json({
+      success: true,
+      data,
     });
-    res.status(201).json({ success: true, data });
   })
 );
 
@@ -199,8 +378,17 @@ router.get(
   '/sales/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await salesService.getSaleById(req.businessId!, req.params.id);
-    res.json({ success: true, data });
+    const id = String(req.params.id);
+
+    const data = await salesService.getSaleById(
+      req.businessId!,
+      id
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
@@ -208,14 +396,31 @@ router.post(
   '/sales/:id/cancel',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await salesService.cancelSale(req.businessId!, req.params.id, req.user?.userId);
-    res.json({ success: true, data });
+    const id = String(req.params.id);
+
+    const data = await salesService.cancelSale(
+      req.businessId!,
+      id,
+      req.user?.userId
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
   })
 );
 
-// Health
+/* =========================================================
+   HEALTH
+========================================================= */
+
 router.get('/health', (_req, res) => {
-  res.json({ success: true, message: 'BillMint API is running', version: '1.0.0' });
+  res.status(200).json({
+    success: true,
+    message: 'BillMint API is running',
+    version: '1.0.0',
+  });
 });
 
 export default router;

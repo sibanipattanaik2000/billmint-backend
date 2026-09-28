@@ -70,25 +70,139 @@ export const supplierSchema = z.object({
 });
 
 export const itemSchema = z.object({
-  name: z.string().min(1, 'Item name is required').max(200),
-  sku: z.string().max(50).optional().or(z.literal('')),
-  barcode: z.string().max(50).optional().or(z.literal('')),
-  categoryId: z.string().uuid().optional().nullable(),
-  brandId: z.string().uuid().optional().nullable(),
-  unitId: z.string().uuid().optional().nullable(),
-  description: z.string().max(1000).optional().or(z.literal('')),
-  purchasePrice: z.coerce.number().min(0).default(0),
-  salePrice: z.coerce.number().min(0).default(0),
-  mrp: z.coerce.number().min(0).optional().nullable(),
-  openingStock: z.coerce.number().min(0).default(0),
-  minimumStock: z.coerce.number().min(0).default(0),
-  gstRate: z.coerce.number().min(0).max(100).default(18),
-  hsnSac: z.string().max(20).optional().or(z.literal('')),
-  discountPercent: z.coerce.number().min(0).max(100).default(0),
-  supplierId: z.string().uuid().optional().nullable(),
-  trackBatch: z.boolean().default(false),
-  trackSerial: z.boolean().default(false),
-  trackExpiry: z.boolean().default(false),
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Item name is required')
+    .max(200),
+
+  // Internal Item Code used for Sales lookup.
+  sku: z
+    .string()
+    .trim()
+    .max(50)
+    .optional()
+    .or(z.literal('')),
+
+  // Physical barcode.
+  barcode: z
+    .string()
+    .trim()
+    .max(100)
+    .optional()
+    .or(z.literal('')),
+
+  // IMEI is optional at the generic schema level because
+  // services can also be non-serialized products/services.
+  // createItem() will enforce it when trackSerial=true.
+  imei: z
+    .string()
+    .trim()
+    .regex(/^\d{15}$/, 'IMEI must contain exactly 15 digits')
+    .optional()
+    .or(z.literal('')),
+
+  categoryId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
+
+  brandId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
+
+  unitId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
+
+  description: z
+    .string()
+    .trim()
+    .max(1000)
+    .optional()
+    .or(z.literal('')),
+
+  purchasePrice: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .default(0),
+
+  salePrice: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .default(0),
+
+  mrp: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .optional()
+    .nullable(),
+
+  openingStock: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .default(0),
+
+  minimumStock: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .default(0),
+
+  gstRate: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .max(100)
+    .default(18),
+
+  hsnSac: z
+    .string()
+    .trim()
+    .max(20)
+    .optional()
+    .or(z.literal('')),
+
+  discountPercent: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .max(100)
+    .default(0),
+
+  supplierId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
+
+  trackBatch: z
+    .boolean()
+    .default(false),
+
+  trackSerial: z
+    .boolean()
+    .default(false),
+
+  trackExpiry: z
+    .boolean()
+    .default(false),
 });
 
 export const saleItemSchema = z.object({
