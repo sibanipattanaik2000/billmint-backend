@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
@@ -135,6 +136,7 @@ model Business {
   invoiceSequences   InvoiceSequence[]
   categories         ItemCategory[]
   items              Item[]
+  inventoryUnits     InventoryUnit[]
   notifications      Notification[]
   otherIncomes       OtherIncome[]
   paymentsIn         PaymentIn[]
@@ -314,54 +316,107 @@ model Unit {
 }
 
 model Item {
-  id                  String                @id @default(uuid())
-  businessId          String
-  name                String
-  sku                 String?
-  barcode             String?
-  imei                String?
-  categoryId          String?
-  brandId             String?
-  unitId              String?
-  description         String?
-  purchasePrice       Decimal               @default(0) @db.Decimal(18, 2)
-  salePrice           Decimal               @default(0) @db.Decimal(18, 2)
-  mrp                 Decimal?              @db.Decimal(18, 2)
-  openingStock        Decimal               @default(0) @db.Decimal(18, 3)
-  currentStock        Decimal               @default(0) @db.Decimal(18, 3)
-  minimumStock        Decimal               @default(0) @db.Decimal(18, 3)
-  gstRate             Decimal               @default(18) @db.Decimal(5, 2)
-  hsnSac              String?
-  discountPercent     Decimal               @default(0) @db.Decimal(5, 2)
-  supplierId          String?
-  imageUrl            String?
-  trackBatch          Boolean               @default(false)
-  trackSerial         Boolean               @default(false)
-  trackExpiry         Boolean               @default(false)
-  status              ItemStatus            @default(ACTIVE)
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
-  deletedAt           DateTime?
-  challanItems        DeliveryChallanItem[]
-  brand               Brand?                @relation(fields: [brandId], references: [id])
-  business            Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  category            ItemCategory?         @relation(fields: [categoryId], references: [id])
-  supplier            Supplier?             @relation(fields: [supplierId], references: [id])
-  unit                Unit?                 @relation(fields: [unitId], references: [id])
+  id              String     @id @default(uuid())
+  businessId      String
+  name            String
+  sku             String?
+  barcode         String?
+  imei            String?
+  categoryId      String?
+  brandId         String?
+  unitId          String?
+  description     String?
+  purchasePrice   Decimal    @default(0) @db.Decimal(18, 2)
+  salePrice       Decimal    @default(0) @db.Decimal(18, 2)
+  mrp             Decimal?   @db.Decimal(18, 2)
+  openingStock    Decimal    @default(0) @db.Decimal(18, 3)
+  currentStock    Decimal    @default(0) @db.Decimal(18, 3)
+  minimumStock    Decimal    @default(0) @db.Decimal(18, 3)
+  gstRate         Decimal    @default(18) @db.Decimal(5, 2)
+  hsnSac          String?
+  discountPercent Decimal    @default(0) @db.Decimal(5, 2)
+  supplierId      String?
+  imageUrl        String?
+  trackBatch      Boolean    @default(false)
+  trackSerial     Boolean    @default(false)
+  trackExpiry     Boolean    @default(false)
+  status          ItemStatus @default(ACTIVE)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  deletedAt       DateTime?
+
+  challanItems DeliveryChallanItem[]
+  brand        Brand?                @relation(fields: [brandId], references: [id])
+  business     Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category     ItemCategory?         @relation(fields: [categoryId], references: [id])
+  supplier     Supplier?             @relation(fields: [supplierId], references: [id])
+  unit         Unit?                 @relation(fields: [unitId], references: [id])
+
   purchaseItems       PurchaseItem[]
   purchaseReturnItems PurchaseReturnItem[]
   quotationItems      QuotationItem[]
   saleItems           SaleItem[]
   saleReturnItems     SaleReturnItem[]
   stockAdjustments    StockAdjustment[]
+  inventoryUnits      InventoryUnit[]
   stockMovements      StockMovement[]
 
+  @@unique([businessId, sku])
+  @@unique([businessId, barcode])
+  @@unique([businessId, imei])
   @@index([businessId])
   @@index([businessId, name])
+  @@index([businessId, status])
+  @@index([businessId, currentStock])
   @@index([categoryId])
   @@index([barcode])
   @@index([sku])
+  @@index([imei])
   @@map("items")
+}
+
+model InventoryUnit {
+  id              String              @id @default(uuid())
+  businessId      String
+  itemId          String
+
+  serialNumber    String?
+  imei            String?
+
+  status          InventoryUnitStatus @default(AVAILABLE)
+
+  purchaseId      String?
+  purchaseItemId  String?
+  saleId          String?
+  saleItemId      String?
+
+  purchasePrice   Decimal?            @db.Decimal(18, 2)
+  notes           String?
+
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  soldAt          DateTime?
+
+  business        Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  item            Item                 @relation(fields: [itemId], references: [id])
+
+  purchase        Purchase?            @relation(fields: [purchaseId], references: [id])
+  purchaseItem    PurchaseItem?        @relation(fields: [purchaseItemId], references: [id])
+  sale            Sale?                @relation(fields: [saleId], references: [id])
+  saleItem        SaleItem?            @relation(fields: [saleItemId], references: [id])
+
+  @@unique([businessId, imei])
+  @@unique([businessId, serialNumber])
+
+  @@index([businessId, itemId])
+  @@index([businessId, status])
+  @@index([itemId, status])
+  @@index([saleId])
+  @@index([saleItemId])
+  @@index([purchaseId])
+  @@index([purchaseItemId])
+
+  @@map("inventory_units")
 }
 
 model StockMovement {
@@ -435,6 +490,7 @@ model Sale {
   payments       PaymentInAllocation[]
   items          SaleItem[]
   returns        SaleReturn[]
+  inventoryUnits InventoryUnit[]
   business       Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
   customer       Customer?             @relation(fields: [customerId], references: [id])
 
@@ -466,7 +522,7 @@ model SaleItem {
   createdAt       DateTime @default(now())
   item            Item?    @relation(fields: [itemId], references: [id])
   sale            Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
-
+  inventoryUnits InventoryUnit[]
   @@index([saleId])
   @@index([itemId])
   @@map("sale_items")
@@ -502,6 +558,7 @@ model Purchase {
   payments       PaymentOutAllocation[]
   items          PurchaseItem[]
   returns        PurchaseReturn[]
+  inventoryUnits InventoryUnit[]
   business       Business               @relation(fields: [businessId], references: [id], onDelete: Cascade)
   supplier       Supplier?              @relation(fields: [supplierId], references: [id])
 
@@ -532,7 +589,7 @@ model PurchaseItem {
   createdAt       DateTime @default(now())
   item            Item?    @relation(fields: [itemId], references: [id])
   purchase        Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-
+  inventoryUnits InventoryUnit[]
   @@index([purchaseId])
   @@index([itemId])
   @@map("purchase_items")
@@ -1021,4 +1078,13 @@ enum ImportStatus {
   PROCESSING
   COMPLETED
   FAILED
+}
+
+enum InventoryUnitStatus {
+  AVAILABLE
+  RESERVED
+  SOLD
+  RETURNED
+  DAMAGED
+  LOST
 }

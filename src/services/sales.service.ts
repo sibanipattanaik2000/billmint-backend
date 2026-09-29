@@ -18,6 +18,14 @@ interface SaleItemInput {
   rate: number;
   discountPercent?: number;
   gstRate?: number;
+
+  /*
+   * For serialized / IMEI-tracked items.
+   *
+   * The frontend sends the exact physical inventory units
+   * selected for this sale.
+   */
+  inventoryUnitIds?: string[];
 }
 
 interface CreateSaleInput {
@@ -34,17 +42,15 @@ interface CreateSaleInput {
   createdById?: string;
 }
 
-/*
- * calculateLineItem() only returns the financial calculation fields.
- * A SaleItem additionally needs the item information that is stored
- * in the SaleItem table.
- */
-type CalculatedSaleLine = ReturnType<typeof calculateLineItem> & {
-  itemId: string | null;
-  itemName: string;
-  hsnSac?: string;
-  unit?: string;
-};
+type CalculatedSaleLine =
+  ReturnType<typeof calculateLineItem> & {
+    itemId: string | null;
+    itemName: string;
+    hsnSac?: string;
+    unit?: string;
+
+    inventoryUnitIds: string[];
+  };
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -54,7 +60,7 @@ type TransactionClient = Prisma.TransactionClient;
 
 async function getNextInvoiceNumber(
   businessId: string,
-  tx: TransactionClient
+  tx: TransactionClient,
 ): Promise<string> {
   /*
    * Lock the sequence row so concurrent sales for the same
@@ -82,7 +88,7 @@ async function getNextInvoiceNumber(
   if (!seq) {
     throw new AppError(
       'Invoice sequence not configured',
-      500
+      500,
     );
   }
 
@@ -104,42 +110,107 @@ async function getNextInvoiceNumber(
 }
 
 /* =========================================================
+   SERIALIZED INVENTORY VALIDATION
+========================================================= */
+
+function validateInventoryUnitIds(
+  item: SaleItemInput,
+): string[] {
+  const ids = Array.isArray(item.inventoryUnitIds)
+    ? item.inventoryUnitIds
+    : [];
+
+  const uniqueIds = new Set(ids);
+
+  if (uniqueIds.size !== ids.length) {
+    throw new AppError(
+      `Duplicate inventory unit selected for "${item.itemName}"`,
+      400,
+    );
+  }
+
+  for (const id of ids) {
+    if (
+      typeof id !== 'string' ||
+      !id.trim()
+    ) {
+      throw new AppError(
+        `Invalid inventory unit for "${item.itemName}"`,
+        400,
+      );
+    }
+  }
+
+  return ids;
+}
+
+function assertSerializedQuantity(
+  item: SaleItemInput,
+  inventoryUnitIds: string[],
+): void {
+  if (inventoryUnitIds.length === 0) {
+    return;
+  }
+
+  if (
+    !Number.isInteger(item.quantity) ||
+    item.quantity <= 0
+  ) {
+    throw new AppError(
+      `Serialized item "${item.itemName}" must have a whole-number quantity`,
+      400,
+    );
+  }
+
+  if (inventoryUnitIds.length !== item.quantity) {
+    throw new AppError(
+      `Select exactly ${item.quantity} IMEI/serial unit(s) for "${item.itemName}". Selected: ${inventoryUnitIds.length}`,
+      400,
+    );
+  }
+}
+
+/* =========================================================
    CREATE SALE
 ========================================================= */
 
 export async function createSale(
   businessId: string,
-  input: CreateSaleInput
+  input: CreateSaleInput,
 ) {
-  if (!input.items || input.items.length === 0) {
+  if (
+    !input.items ||
+    input.items.length === 0
+  ) {
     throw new AppError(
       'At least one item is required',
-      400
+      400,
     );
   }
 
   if (input.items.length > 100) {
     throw new AppError(
       'A sale cannot contain more than 100 line items',
-      400
+      400,
     );
   }
 
-  const business = await prisma.business.findFirst({
-    where: {
-      id: businessId,
-      deletedAt: null,
-    },
-    select: {
-      id: true,
-      state: true,
-    },
-  });
+  const business =
+    await prisma.business.findFirst({
+      where: {
+        id: businessId,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        state: true,
+      },
+    });
 
   if (!business) {
     throw new AppError(
       'Business not found',
-      404
+      404,
     );
   }
 
@@ -152,23 +223,24 @@ export async function createSale(
       let customerState: string | null = null;
 
       if (input.customerId) {
-        const customer = await tx.customer.findFirst({
-          where: {
-            id: input.customerId,
-            businessId,
-            deletedAt: null,
-            status: 'ACTIVE',
-          },
-          select: {
-            id: true,
-            state: true,
-          },
-        });
+        const customer =
+          await tx.customer.findFirst({
+            where: {
+              id: input.customerId,
+              businessId,
+              deletedAt: null,
+              status: 'ACTIVE',
+            },
+            select: {
+              id: true,
+              state: true,
+            },
+          });
 
         if (!customer) {
           throw new AppError(
             'Customer not found',
-            404
+            404,
           );
         }
 
@@ -179,7 +251,7 @@ export async function createSale(
         business.state &&
         customerState &&
         business.state.toLowerCase() !==
-          customerState.toLowerCase()
+          customerState.toLowerCase(),
       );
 
       /* =====================================================
@@ -192,9 +264,9 @@ export async function createSale(
             .map((item) => item.itemId)
             .filter(
               (id): id is string =>
-                Boolean(id)
-            )
-        )
+                Boolean(id),
+            ),
+        ),
       );
 
       const dbItems =
@@ -215,6 +287,7 @@ export async function createSale(
                 gstRate: true,
                 hsnSac: true,
                 unitId: true,
+                trackSerial: true,
               },
             })
           : [];
@@ -223,7 +296,7 @@ export async function createSale(
         dbItems.map((item) => [
           item.id,
           item,
-        ])
+        ]),
       );
 
       /* =====================================================
@@ -249,22 +322,33 @@ export async function createSale(
         Decimal
       >();
 
+      /*
+       * Keep every serialized unit requested by this sale.
+       *
+       * Key = itemId
+       * Value = exact physical inventory units.
+       */
+      const requestedInventoryUnits =
+        new Map<string, string[]>();
+
       for (const item of input.items) {
         /* -------------------------------
            QUANTITY
         -------------------------------- */
 
-        if (!Number.isFinite(item.quantity)) {
+        if (
+          !Number.isFinite(item.quantity)
+        ) {
           throw new AppError(
             `Invalid quantity for "${item.itemName}"`,
-            400
+            400,
           );
         }
 
         if (item.quantity <= 0) {
           throw new AppError(
             `Quantity must be greater than zero for "${item.itemName}"`,
-            400
+            400,
           );
         }
 
@@ -278,7 +362,7 @@ export async function createSale(
         ) {
           throw new AppError(
             `Invalid rate for "${item.itemName}"`,
-            400
+            400,
           );
         }
 
@@ -291,14 +375,14 @@ export async function createSale(
         ) {
           if (
             !Number.isFinite(
-              item.discountPercent
+              item.discountPercent,
             ) ||
             item.discountPercent < 0 ||
             item.discountPercent > 100
           ) {
             throw new AppError(
               `Invalid discount for "${item.itemName}"`,
-              400
+              400,
             );
           }
         }
@@ -312,17 +396,29 @@ export async function createSale(
         ) {
           if (
             !Number.isFinite(
-              item.gstRate
+              item.gstRate,
             ) ||
             item.gstRate < 0 ||
             item.gstRate > 100
           ) {
             throw new AppError(
               `Invalid GST rate for "${item.itemName}"`,
-              400
+              400,
             );
           }
         }
+
+        /* -------------------------------
+           SERIALIZED UNITS
+        -------------------------------- */
+
+        const inventoryUnitIds =
+          validateInventoryUnitIds(item);
+
+        assertSerializedQuantity(
+          item,
+          inventoryUnitIds,
+        );
 
         /* ===================================================
            DATABASE ITEM
@@ -335,7 +431,39 @@ export async function createSale(
           if (!dbItem) {
             throw new AppError(
               `Item not found: ${item.itemName}`,
-              404
+              404,
+            );
+          }
+
+          /*
+           * If the item is configured as serial tracked,
+           * the sale must identify the exact physical units.
+           *
+           * We deliberately enforce this server-side so the
+           * frontend cannot accidentally sell a serialized
+           * product without selecting its IMEI/serial.
+           */
+          if (
+            dbItem.trackSerial &&
+            inventoryUnitIds.length === 0
+          ) {
+            throw new AppError(
+              `Select the IMEI/serial unit(s) for "${dbItem.name}" before creating the sale`,
+              400,
+            );
+          }
+
+          /*
+           * A non-serialized item must not receive physical
+           * inventory unit IDs.
+           */
+          if (
+            !dbItem.trackSerial &&
+            inventoryUnitIds.length > 0
+          ) {
+            throw new AppError(
+              `"${dbItem.name}" is not configured for serialized inventory`,
+              400,
             );
           }
 
@@ -344,13 +472,49 @@ export async function createSale(
 
           const existing =
             requestedStock.get(
-              dbItem.id
+              dbItem.id,
             ) || toDecimal(0);
 
           requestedStock.set(
             dbItem.id,
-            existing.plus(qty)
+            existing.plus(qty),
           );
+
+          /*
+           * Merge serialized units if the same item appears
+           * on multiple invoice lines.
+           */
+          if (
+            inventoryUnitIds.length > 0
+          ) {
+            const existingUnits =
+              requestedInventoryUnits.get(
+                dbItem.id,
+              ) || [];
+
+            const merged = [
+              ...existingUnits,
+              ...inventoryUnitIds,
+            ];
+
+            const uniqueMerged =
+              new Set(merged);
+
+            if (
+              uniqueMerged.size !==
+              merged.length
+            ) {
+              throw new AppError(
+                `The same IMEI/serial unit cannot be selected more than once for "${dbItem.name}"`,
+                400,
+              );
+            }
+
+            requestedInventoryUnits.set(
+              dbItem.id,
+              merged,
+            );
+          }
 
           /*
            * Use database GST when frontend did not provide it.
@@ -392,6 +556,13 @@ export async function createSale(
               unit?.shortName ||
               undefined;
           }
+        } else if (
+          inventoryUnitIds.length > 0
+        ) {
+          throw new AppError(
+            `Inventory units require a valid itemId for "${item.itemName}"`,
+            400,
+          );
         }
 
         /* ===================================================
@@ -409,11 +580,6 @@ export async function createSale(
             isInterState,
           });
 
-        /*
-         * IMPORTANT:
-         * CalculatedSaleLine contains both the financial
-         * calculation fields AND SaleItem metadata.
-         */
         lineCalcs.push({
           ...calc,
           itemId:
@@ -424,6 +590,7 @@ export async function createSale(
             item.hsnSac,
           unit:
             item.unit,
+          inventoryUnitIds,
         });
       }
 
@@ -441,19 +608,40 @@ export async function createSale(
         if (!item) {
           throw new AppError(
             'Item not found',
-            404
+            404,
           );
         }
 
         if (
           item.currentStock.lessThan(
-            requestedQty
+            requestedQty,
           )
         ) {
           throw new AppError(
             `Insufficient stock for "${item.name}". Available: ${item.currentStock}, Requested: ${requestedQty}`,
-            400
+            400,
           );
+        }
+
+        /*
+         * For serialized products, quantity must correspond
+         * exactly to selected physical units.
+         */
+        if (item.trackSerial) {
+          const selectedUnits =
+            requestedInventoryUnits.get(
+              itemId,
+            ) || [];
+
+          if (
+            selectedUnits.length !==
+            Number(requestedQty)
+          ) {
+            throw new AppError(
+              `Serialized inventory mismatch for "${item.name}". Required: ${requestedQty}, Selected: ${selectedUnits.length}`,
+              400,
+            );
+          }
         }
       }
 
@@ -463,37 +651,37 @@ export async function createSale(
 
       const totals =
         calculateInvoiceTotals(
-          lineCalcs
+          lineCalcs,
         );
 
       const paidAmount =
         toDecimal(
-          input.paidAmount ?? 0
+          input.paidAmount ?? 0,
         );
 
       if (paidAmount.lt(0)) {
         throw new AppError(
           'Paid amount cannot be negative',
-          400
+          400,
         );
       }
 
       if (
         paidAmount.gt(
-          totals.grandTotal
+          totals.grandTotal,
         )
       ) {
         throw new AppError(
           'Paid amount cannot exceed invoice total',
-          400
+          400,
         );
       }
 
       const balanceAmount =
         roundMoney(
           totals.grandTotal.minus(
-            paidAmount
-          )
+            paidAmount,
+          ),
         );
 
       /* =====================================================
@@ -506,7 +694,7 @@ export async function createSale(
       if (status !== 'DRAFT') {
         if (
           paidAmount.gte(
-            totals.grandTotal
+            totals.grandTotal,
           ) &&
           totals.grandTotal.gt(0)
         ) {
@@ -528,7 +716,7 @@ export async function createSale(
       const invoiceNumber =
         await getNextInvoiceNumber(
           businessId,
-          tx
+          tx,
         );
 
       /* =====================================================
@@ -661,7 +849,7 @@ export async function createSale(
 
                     amount:
                       lc.amount as any,
-                  })
+                  }),
                 ),
             },
           },
@@ -671,6 +859,197 @@ export async function createSale(
             customer: true,
           },
         });
+
+      /* =====================================================
+         SERIALIZED INVENTORY VALIDATION + UPDATE
+      ===================================================== */
+
+      /*
+       * DRAFT:
+       * ----------------
+       * Do NOT reserve, sell, or modify InventoryUnit rows.
+       *
+       * A draft is only an invoice draft.
+       *
+       * NON-DRAFT:
+       * ----------------
+       * Validate exact physical units and atomically mark
+       * them SOLD.
+       */
+      if (status !== 'DRAFT') {
+        for (const [
+          itemId,
+          inventoryUnitIds,
+        ] of requestedInventoryUnits) {
+          if (
+            inventoryUnitIds.length === 0
+          ) {
+            continue;
+          }
+
+          const inventoryUnits =
+            await tx.inventoryUnit.findMany({
+              where: {
+                id: {
+                  in: inventoryUnitIds,
+                },
+                businessId,
+                itemId,
+              },
+              select: {
+                id: true,
+                status: true,
+                itemId: true,
+                businessId: true,
+              },
+            });
+
+          if (
+            inventoryUnits.length !==
+            inventoryUnitIds.length
+          ) {
+            throw new AppError(
+              `One or more selected IMEI/serial units for item ${itemId} do not belong to this business or item`,
+              409,
+            );
+          }
+
+          const inventoryMap =
+            new Map(
+              inventoryUnits.map(
+                (unit) => [
+                  unit.id,
+                  unit,
+                ],
+              ),
+            );
+
+          for (const unitId of inventoryUnitIds) {
+            const unit =
+              inventoryMap.get(unitId);
+
+            if (!unit) {
+              throw new AppError(
+                'Selected inventory unit was not found',
+                409,
+              );
+            }
+
+            /*
+             * AVAILABLE and RETURNED are sellable.
+             *
+             * RESERVED/SOLD/DAMAGED/LOST are not.
+             */
+            if (
+              unit.status !==
+                'AVAILABLE' &&
+              unit.status !==
+                'RETURNED'
+            ) {
+              throw new AppError(
+                `Inventory unit ${unitId} is no longer available`,
+                409,
+              );
+            }
+          }
+
+          /*
+           * Conditional update:
+           *
+           * The WHERE clause includes status = AVAILABLE/RETURNED.
+           * Therefore two concurrent sales cannot both successfully
+           * sell the same physical unit.
+           */
+          const updated =
+            await tx.inventoryUnit.updateMany({
+              where: {
+                id: {
+                  in: inventoryUnitIds,
+                },
+                businessId,
+                itemId,
+                status: {
+                  in: [
+                    'AVAILABLE',
+                    'RETURNED',
+                  ],
+                },
+              },
+              data: {
+                status: 'SOLD',
+                saleId: created.id,
+                soldAt: new Date(),
+              },
+            });
+
+          if (
+            updated.count !==
+            inventoryUnitIds.length
+          ) {
+            throw new AppError(
+              'One or more selected IMEI/serial units were sold or changed by another transaction. Please refresh and try again.',
+              409,
+            );
+          }
+        }
+      }
+
+      /* =====================================================
+         ATTACH INVENTORY UNITS TO SALE ITEMS
+      ===================================================== */
+
+      if (status !== 'DRAFT') {
+        for (const line of lineCalcs) {
+          if (
+            !line.itemId ||
+            line.inventoryUnitIds.length === 0
+          ) {
+            continue;
+          }
+
+          const saleItem =
+            created.items.find(
+              (item) =>
+                item.itemId ===
+                  line.itemId &&
+                item.itemName ===
+                  line.itemName,
+            );
+
+          if (!saleItem) {
+            throw new AppError(
+              `Unable to attach inventory units to sale item "${line.itemName}"`,
+              500,
+            );
+          }
+
+          const attached =
+            await tx.inventoryUnit.updateMany({
+              where: {
+                id: {
+                  in: line.inventoryUnitIds,
+                },
+                businessId,
+                itemId: line.itemId,
+                saleId: created.id,
+              },
+              data: {
+                saleItemId:
+                  saleItem.id,
+              },
+            });
+
+          if (
+            attached.count !==
+            line.inventoryUnitIds.length
+          ) {
+            throw new AppError(
+              `Unable to attach all inventory units to sale item "${line.itemName}"`,
+              500,
+            );
+          }
+        }
+      }
 
       /* =====================================================
          STOCK UPDATE
@@ -710,7 +1089,7 @@ export async function createSale(
           if (updated.count !== 1) {
             throw new AppError(
               'Stock changed while processing this sale. Please retry.',
-              409
+              409,
             );
           }
 
@@ -727,7 +1106,7 @@ export async function createSale(
           if (!item) {
             throw new AppError(
               'Item disappeared while processing sale',
-              409
+              409,
             );
           }
 
@@ -841,9 +1220,9 @@ export async function createSale(
             if (cashAccount) {
               const newBalance =
                 toDecimal(
-                  cashAccount.currentBalance
+                  cashAccount.currentBalance,
                 ).plus(
-                  paidAmount
+                  paidAmount,
                 );
 
               await tx.bankAccount.update({
@@ -918,11 +1297,45 @@ export async function createSale(
                 totals.grandTotal.toString(),
 
               status,
+
+              serializedUnits:
+                Array.from(
+                  requestedInventoryUnits.values(),
+                ).reduce(
+                  (total, ids) =>
+                    total + ids.length,
+                  0,
+                ),
             }),
         },
       });
 
-      return created;
+      /*
+       * Return the sale with the exact inventory units attached.
+       */
+      return tx.sale.findUnique({
+        where: {
+          id: created.id,
+        },
+        include: {
+          customer: true,
+
+          items: {
+            include: {
+              item: true,
+              inventoryUnits: {
+                select: {
+                  id: true,
+                  imei: true,
+                  serialNumber: true,
+                  status: true,
+                  purchasePrice: true,
+                },
+              },
+            },
+          },
+        },
+      });
     },
     {
       isolationLevel:
@@ -931,7 +1344,7 @@ export async function createSale(
       maxWait: 10_000,
 
       timeout: 20_000,
-    }
+    },
   );
 }
 
@@ -948,12 +1361,12 @@ export async function getSales(
     status?: string;
     from?: Date;
     to?: Date;
-  }
+  },
 ) {
   const page =
     Math.max(
       1,
-      options.page || 1
+      options.page || 1,
     );
 
   const limit =
@@ -961,8 +1374,8 @@ export async function getSales(
       100,
       Math.max(
         1,
-        options.limit || 20
-      )
+        options.limit || 20,
+      ),
     );
 
   const skip =
@@ -1034,7 +1447,18 @@ export async function getSales(
             },
           },
 
-          items: true,
+          items: {
+            include: {
+              inventoryUnits: {
+                select: {
+                  id: true,
+                  imei: true,
+                  serialNumber: true,
+                  status: true,
+                },
+              },
+            },
+          },
         },
 
         orderBy: [
@@ -1065,7 +1489,7 @@ export async function getSales(
       total,
       totalPages:
         Math.ceil(
-          total / limit
+          total / limit,
         ),
     },
   };
@@ -1077,7 +1501,7 @@ export async function getSales(
 
 export async function getSaleById(
   businessId: string,
-  id: string
+  id: string,
 ) {
   const sale =
     await prisma.sale.findFirst({
@@ -1093,6 +1517,16 @@ export async function getSaleById(
         items: {
           include: {
             item: true,
+
+            inventoryUnits: {
+              select: {
+                id: true,
+                imei: true,
+                serialNumber: true,
+                status: true,
+                purchasePrice: true,
+              },
+            },
           },
         },
 
@@ -1107,7 +1541,7 @@ export async function getSaleById(
   if (!sale) {
     throw new AppError(
       'Sale not found',
-      404
+      404,
     );
   }
 
@@ -1121,7 +1555,7 @@ export async function getSaleById(
 export async function cancelSale(
   businessId: string,
   id: string,
-  userId?: string
+  userId?: string,
 ) {
   return prisma.$transaction(
     async (tx) => {
@@ -1135,13 +1569,23 @@ export async function cancelSale(
 
           include: {
             items: true,
+
+            inventoryUnits: {
+              select: {
+                id: true,
+                itemId: true,
+                saleId: true,
+                saleItemId: true,
+                status: true,
+              },
+            },
           },
         });
 
       if (!sale) {
         throw new AppError(
           'Sale not found',
-          404
+          404,
         );
       }
 
@@ -1151,85 +1595,147 @@ export async function cancelSale(
       ) {
         throw new AppError(
           'Sale already cancelled',
-          400
+          400,
         );
       }
 
-      /* ===============================================
-         RESTORE STOCK
-      =============================================== */
+      /*
+       * DRAFT SALES HAVE NEVER CONSUMED STOCK.
+       *
+       * Therefore:
+       * - do not restore Item.currentStock
+       * - do not create SALE_RETURN movement
+       * - there should normally be no SOLD InventoryUnits
+       */
+      if (
+        sale.status !== 'DRAFT'
+      ) {
+        /* ===============================================
+           RESTORE SERIALIZED INVENTORY
+        =============================================== */
 
-      for (const saleItem of sale.items) {
-        if (!saleItem.itemId) {
-          continue;
+        const soldUnits =
+          sale.inventoryUnits.filter(
+            (unit) =>
+              unit.status === 'SOLD' &&
+              unit.saleId === sale.id,
+          );
+
+        if (
+          soldUnits.length > 0
+        ) {
+          /*
+           * RETURNED is used here rather than AVAILABLE
+           * because this physical unit has completed a sale
+           * lifecycle and is now back in inventory.
+           */
+          const restored =
+            await tx.inventoryUnit.updateMany({
+              where: {
+                id: {
+                  in: soldUnits.map(
+                    (unit) => unit.id,
+                  ),
+                },
+                businessId,
+                saleId: sale.id,
+                status: 'SOLD',
+              },
+              data: {
+                status: 'RETURNED',
+                saleId: null,
+                saleItemId: null,
+                soldAt: null,
+              },
+            });
+
+          if (
+            restored.count !==
+            soldUnits.length
+          ) {
+            throw new AppError(
+              'One or more serialized inventory units changed while cancelling the sale. Please retry.',
+              409,
+            );
+          }
         }
 
-        const item =
-          await tx.item.update({
+        /* ===============================================
+           RESTORE NORMAL STOCK
+        =============================================== */
+
+        for (const saleItem of sale.items) {
+          if (!saleItem.itemId) {
+            continue;
+          }
+
+          const item =
+            await tx.item.update({
+              where: {
+                id:
+                  saleItem.itemId,
+              },
+
+              data: {
+                currentStock: {
+                  increment:
+                    saleItem.quantity as any,
+                },
+              },
+            });
+
+          await tx.stockMovement.create({
+            data: {
+              businessId,
+
+              itemId:
+                saleItem.itemId,
+
+              type:
+                'SALE_RETURN',
+
+              quantityIn:
+                saleItem.quantity as any,
+
+              balance:
+                item.currentStock as any,
+
+              referenceType:
+                'sale_cancel',
+
+              referenceId:
+                sale.id,
+
+              notes:
+                'Sale cancelled',
+            },
+          });
+        }
+
+        /* ===============================================
+           CUSTOMER BALANCE
+        =============================================== */
+
+        if (
+          sale.customerId &&
+          toDecimal(
+            sale.balanceAmount,
+          ).gt(0)
+        ) {
+          await tx.customer.update({
             where: {
               id:
-                saleItem.itemId,
+                sale.customerId,
             },
 
             data: {
-              currentStock: {
-                increment:
-                  saleItem.quantity as any,
+              currentBalance: {
+                decrement:
+                  sale.balanceAmount as any,
               },
             },
           });
-
-        await tx.stockMovement.create({
-          data: {
-            businessId,
-
-            itemId:
-              saleItem.itemId,
-
-            type:
-              'SALE_RETURN',
-
-            quantityIn:
-              saleItem.quantity as any,
-
-            balance:
-              item.currentStock as any,
-
-            referenceType:
-              'sale_cancel',
-
-            referenceId:
-              sale.id,
-
-            notes:
-              'Sale cancelled',
-          },
-        });
-      }
-
-      /* ===============================================
-         CUSTOMER BALANCE
-      =============================================== */
-
-      if (
-        sale.customerId &&
-        toDecimal(
-          sale.balanceAmount
-        ).gt(0)
-      ) {
-        await tx.customer.update({
-          where: {
-            id:
-              sale.customerId,
-          },
-
-          data: {
-            currentBalance: {
-              decrement:
-                sale.balanceAmount as any,
-            },
-          },
-        });
+        }
       }
 
       /* ===============================================
@@ -1269,6 +1775,21 @@ export async function cancelSale(
 
           recordName:
             sale.invoiceNumber,
+
+          details:
+            JSON.stringify({
+              previousStatus:
+                sale.status,
+
+              restoredSerializedUnits:
+                sale.inventoryUnits.filter(
+                  (unit) =>
+                    unit.status ===
+                      'SOLD' &&
+                    unit.saleId ===
+                      sale.id,
+                ).length,
+            }),
         },
       });
 
@@ -1284,6 +1805,6 @@ export async function cancelSale(
       maxWait: 10_000,
 
       timeout: 20_000,
-    }
+    },
   );
 }

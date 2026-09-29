@@ -14,6 +14,7 @@ import {
   saleSchema,
   paginationSchema,
 } from '../validators/common';
+import prisma from '../utils/prisma';
 
 const router = Router();
 
@@ -218,6 +219,27 @@ router.get(
   })
 );
 router.get(
+  "/items/imei/:imei",
+  authenticate,
+  asyncHandler(
+    async (
+      req: AuthRequest,
+      res: Response,
+    ) => {
+      const data =
+        await itemsService.searchByImei(
+          req.businessId!,
+          String(req.params.imei),
+        );
+
+      res.json({
+        success: true,
+        data,
+      });
+    },
+  ),
+);
+router.get(
   '/items/:id',
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
@@ -415,12 +437,40 @@ router.post(
    HEALTH
 ========================================================= */
 
-router.get('/health', (_req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'BillMint API is running',
-    version: '1.0.0',
-  });
-});
+router.get(
+  "/health",
+  asyncHandler(async (_req, res) => {
+    const startedAt = Date.now();
+
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+
+      res.status(200).json({
+        success: true,
+        status: "healthy",
+        message: "BillMint API is running",
+        database: "connected",
+        latencyMs: Date.now() - startedAt,
+        version: "1.0.0",
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error(
+        "[HEALTH] Database check failed:",
+        error,
+      );
+
+      res.status(503).json({
+        success: false,
+        status: "degraded",
+        message: "BillMint API is running but database is unavailable",
+        database: "disconnected",
+        latencyMs: Date.now() - startedAt,
+        version: "1.0.0",
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }),
+);
 
 export default router;

@@ -2,6 +2,91 @@ import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
 import { toDecimal } from "../utils/money";
 
+function normalizeOptionalString(
+  value: unknown,
+): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+
+  return normalized.length > 0
+    ? normalized
+    : null;
+}
+
+function validateImei(
+  imei: string | null,
+): void {
+  if (!imei) {
+    throw new AppError(
+      "IMEI number is required for serialized items",
+      400,
+    );
+  }
+
+  if (!/^\d{15}$/.test(imei)) {
+    throw new AppError(
+      "IMEI number must contain exactly 15 digits",
+      400,
+    );
+  }
+}
+
+function handleItemUniqueError(
+  error: unknown,
+): never {
+  const prismaError = error as {
+    code?: string;
+    meta?: {
+      target?: string[] | string;
+    };
+  };
+
+  if (prismaError?.code === "P2002") {
+    const target = Array.isArray(
+      prismaError.meta?.target,
+    )
+      ? prismaError.meta.target.join(", ")
+      : String(
+          prismaError.meta?.target ?? "",
+        );
+
+    if (target.includes("sku")) {
+      throw new AppError(
+        "This Item Code already exists for this business",
+        409,
+      );
+    }
+
+    if (target.includes("barcode")) {
+      throw new AppError(
+        "This barcode already exists for this business",
+        409,
+      );
+    }
+
+    if (target.includes("imei")) {
+      throw new AppError(
+        "This IMEI already exists for this business",
+        409,
+      );
+    }
+
+    throw new AppError(
+      "An item with one of these identifiers already exists",
+      409,
+    );
+  }
+
+  throw error;
+}
+
+/* =========================================================
+   LIST ITEMS
+========================================================= */
+
 export async function listItems(
   businessId: string,
   opts: {
@@ -12,345 +97,552 @@ export async function listItems(
     lowStock?: boolean;
   },
 ) {
-  const page = opts.page || 1;
-  const limit = opts.limit || 20;
+  const page = Math.max(
+    1,
+    Number(opts.page) || 1,
+  );
+
+  const limit = Math.min(
+    100,
+    Math.max(
+      1,
+      Number(opts.limit) || 20,
+    ),
+  );
+
   const skip = (page - 1) * limit;
 
-  const where: any = { businessId, deletedAt: null, status: "ACTIVE" };
-  if (opts.categoryId) where.categoryId = opts.categoryId;
-  if (opts.search) {
-    where.OR = [
-      { name: { contains: opts.search, mode: "insensitive" } },
-      { sku: { contains: opts.search, mode: "insensitive" } },
-      { barcode: { contains: opts.search } },
-      { hsnSac: { contains: opts.search } },
-    ];
-  }
-  if (opts.lowStock) {
-    where.AND = [{ currentStock: { lte: prisma.item.fields.minimumStock } }];
+  const where: any = {
+    businessId,
+    deletedAt: null,
+    status: "ACTIVE",
+  };
+
+  if (opts.categoryId) {
+    where.categoryId = opts.categoryId;
   }
 
-  const [data, total] = await Promise.all([
-    prisma.item.findMany({
-      where,
-      include: {
-        category: { select: { id: true, name: true } },
-        brand: { select: { id: true, name: true } },
-        unit: { select: { id: true, name: true, shortName: true } },
+  if (opts.search?.trim()) {
+    const search = opts.search.trim();
+
+    where.OR = [
+      {
+        name: {
+          contains: search,
+          mode: "insensitive",
+        },
       },
-      orderBy: { name: "asc" },
-      skip,
-      take: limit,
-    }),
-    prisma.item.count({ where }),
-  ]);
+      {
+        sku: {
+          contains: search,
+          mode: "insensitive",
+        },
+      },
+      {
+        barcode: {
+          contains: search,
+          mode: "insensitive",
+        },
+      },
+      {
+        imei: {
+          contains: search,
+        },
+      },
+      {
+        hsnSac: {
+          contains: search,
+          mode: "insensitive",
+        },
+      },
+    ];
+  }
+
+  /*
+   * We intentionally do not use a Prisma field reference
+   * for low-stock filtering here.
+   *
+   * currentStock <= minimumStock is better handled with
+   * a dedicated query/index strategy when reporting scale
+   * becomes important.
+   */
+  if (opts.lowStock) {
+    where.AND = [
+      {
+        currentStock: {
+          lte: 0,
+        },
+      },
+    ];
+  }
+
+  const [data, total] =
+    await Promise.all([
+      prisma.item.findMany({
+        where,
+
+        include: {
+          category: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+
+          brand: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+
+          unit: {
+            select: {
+              id: true,
+              name: true,
+              shortName: true,
+            },
+          },
+
+          supplier: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+
+        orderBy: [
+          {
+            name: "asc",
+          },
+          {
+            id: "asc",
+          },
+        ],
+
+        skip,
+        take: limit,
+      }),
+
+      prisma.item.count({
+        where,
+      }),
+    ]);
 
   return {
     data,
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(
+        total / limit,
+      ),
+    },
   };
 }
 
-export async function getItem(businessId: string, id: string) {
-  const item = await prisma.item.findFirst({
-    where: { id, businessId, deletedAt: null },
-    include: {
-      category: true,
-      brand: true,
-      unit: true,
-      supplier: { select: { id: true, name: true } },
-      stockMovements: { orderBy: { date: "desc" }, take: 50 },
-    },
-  });
-  if (!item) throw new AppError("Item not found", 404);
+/* =========================================================
+   GET ITEM
+========================================================= */
+
+export async function getItem(
+  businessId: string,
+  id: string,
+) {
+  const item =
+    await prisma.item.findFirst({
+      where: {
+        id,
+        businessId,
+        deletedAt: null,
+      },
+
+      include: {
+        category: true,
+        brand: true,
+
+        unit: true,
+
+        supplier: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        stockMovements: {
+          orderBy: [
+            {
+              date: "desc",
+            },
+            {
+              id: "desc",
+            },
+          ],
+
+          take: 50,
+        },
+      },
+    });
+
+  if (!item) {
+    throw new AppError(
+      "Item not found",
+      404,
+    );
+  }
+
   return item;
 }
+
+/* =========================================================
+   CREATE ITEM
+========================================================= */
 
 export async function createItem(
   businessId: string,
   data: any,
-  userId?: string
+  userId?: string,
 ) {
-  const openingStock = toDecimal(data.openingStock || 0);
-
-  const sku =
-    typeof data.sku === 'string' && data.sku.trim()
-      ? data.sku.trim()
-      : null;
-
-  const barcode =
-    typeof data.barcode === 'string' && data.barcode.trim()
-      ? data.barcode.trim()
-      : null;
-
-  const imei =
-    typeof data.imei === 'string' && data.imei.trim()
-      ? data.imei.trim()
-      : null;
-
-  const trackSerial = Boolean(data.trackSerial);
-
-  /*
-   * Serialized inventory rules:
-   *
-   * A serial/IMEI-tracked product must have an IMEI.
-   * We also keep its initial stock as one physical unit.
-   *
-   * This prevents a single IMEI from representing multiple
-   * anonymous physical devices.
-   */
-  if (trackSerial) {
-    if (!imei) {
-      throw new AppError(
-        'IMEI number is required for serialized items',
-        400
-      );
-    }
-
-    if (!/^\d{15}$/.test(imei)) {
-      throw new AppError(
-        'IMEI number must contain exactly 15 digits',
-        400
-      );
-    }
-
-    if (openingStock > toDecimal(1)) {
-      throw new AppError(
-        'An IMEI-tracked item can initially represent only one physical device',
-        400
-      );
-    }
-  }
-
-  /*
-   * Normalize identifiers before checking them.
-   * Database uniqueness remains the final protection.
-   */
-  const existing = await prisma.item.findFirst({
-    where: {
-      businessId,
-      deletedAt: null,
-      OR: [
-        ...(sku ? [{ sku }] : []),
-        ...(barcode ? [{ barcode }] : []),
-        ...(imei ? [{ imei }] : []),
-      ],
-    },
-    select: {
-      id: true,
-      sku: true,
-      barcode: true,
-      imei: true,
-    },
-  });
-
-  if (existing) {
-    if (sku && existing.sku === sku) {
-      throw new AppError(
-        `Item Code "${sku}" already exists`,
-        409
-      );
-    }
-
-    if (barcode && existing.barcode === barcode) {
-      throw new AppError(
-        `Barcode "${barcode}" already exists`,
-        409
-      );
-    }
-
-    if (imei && existing.imei === imei) {
-      throw new AppError(
-        `IMEI "${imei}" already exists`,
-        409
-      );
-    }
-
+  if (
+    typeof data.name !== "string" ||
+    !data.name.trim()
+  ) {
     throw new AppError(
-      'An item with one of these identifiers already exists',
-      409
+      "Item name is required",
+      400,
     );
   }
 
-  const item = await prisma.$transaction(async (tx) => {
-    let created;
+  const openingStock =
+    toDecimal(
+      data.openingStock ?? 0,
+    );
 
-    try {
-      created = await tx.item.create({
-        data: {
-          businessId,
+  if (openingStock.lt(0)) {
+    throw new AppError(
+      "Opening stock cannot be negative",
+      400,
+    );
+  }
 
-          name: data.name.trim(),
+  const sku =
+    normalizeOptionalString(
+      data.sku,
+    );
 
-          sku,
-          barcode,
-          imei,
+  const barcode =
+    normalizeOptionalString(
+      data.barcode,
+    );
 
-          categoryId: data.categoryId || null,
-          brandId: data.brandId || null,
-          unitId: data.unitId || null,
+  const imei =
+    normalizeOptionalString(
+      data.imei,
+    );
 
-          description:
-            typeof data.description === 'string' &&
-            data.description.trim()
-              ? data.description.trim()
-              : null,
+  const trackSerial =
+    Boolean(data.trackSerial);
 
-          purchasePrice: toDecimal(
-            data.purchasePrice || 0
-          ) as any,
+  if (trackSerial) {
+    validateImei(imei);
 
-          salePrice: toDecimal(
-            data.salePrice || 0
-          ) as any,
-
-          mrp:
-            data.mrp != null
-              ? (toDecimal(data.mrp) as any)
-              : null,
-
-          openingStock: openingStock as any,
-          currentStock: openingStock as any,
-
-          minimumStock: toDecimal(
-            data.minimumStock || 0
-          ) as any,
-
-          gstRate: toDecimal(
-            data.gstRate ?? 18
-          ) as any,
-
-          hsnSac:
-            typeof data.hsnSac === 'string' &&
-            data.hsnSac.trim()
-              ? data.hsnSac.trim()
-              : null,
-
-          discountPercent: toDecimal(
-            data.discountPercent || 0
-          ) as any,
-
-          supplierId: data.supplierId || null,
-
-          trackBatch: Boolean(data.trackBatch),
-          trackSerial,
-          trackExpiry: Boolean(data.trackExpiry),
-        },
-      });
-    } catch (error: any) {
-      /*
-       * The database unique constraints are the final
-       * concurrency-safe protection.
-       */
-      if (error?.code === 'P2002') {
-        const target = Array.isArray(error.meta?.target)
-          ? error.meta.target.join(', ')
-          : '';
-
-        if (target.includes('imei')) {
-          throw new AppError(
-            'This IMEI already exists for this business',
-            409
-          );
-        }
-
-        if (target.includes('sku')) {
-          throw new AppError(
-            'This Item Code already exists for this business',
-            409
-          );
-        }
-
-        if (target.includes('barcode')) {
-          throw new AppError(
-            'This barcode already exists for this business',
-            409
-          );
-        }
-
-        throw new AppError(
-          'An item with one of these identifiers already exists',
-          409
-        );
-      }
-
-      throw error;
+    /*
+     * One Item represents one physical serialized
+     * device in the current BillMint inventory model.
+     */
+    if (openingStock.gt(1)) {
+      throw new AppError(
+        "A serialized item can have maximum opening stock of 1",
+        400,
+      );
     }
+  }
 
-    if (openingStock.gt(0)) {
-      await tx.stockMovement.create({
-        data: {
-          businessId,
-          itemId: created.id,
-          type: 'OPENING',
-          quantityIn: openingStock as any,
-          quantityOut: toDecimal(0) as any,
-          balance: openingStock as any,
-          notes: 'Opening stock',
+  if (!trackSerial && imei) {
+    throw new AppError(
+      "An IMEI can only be assigned when serial tracking is enabled",
+      400,
+    );
+  }
+
+  try {
+    const item =
+      await prisma.$transaction(
+        async (tx) => {
+          /*
+           * The database unique constraints are the final
+           * concurrency protection. This pre-check only gives
+           * the user a nicer error before attempting the insert.
+           */
+          const existing =
+            await tx.item.findFirst({
+              where: {
+                businessId,
+                deletedAt: null,
+
+                OR: [
+                  ...(sku
+                    ? [{ sku }]
+                    : []),
+
+                  ...(barcode
+                    ? [{ barcode }]
+                    : []),
+
+                  ...(imei
+                    ? [{ imei }]
+                    : []),
+                ],
+              },
+
+              select: {
+                id: true,
+                sku: true,
+                barcode: true,
+                imei: true,
+              },
+            });
+
+          if (existing) {
+            if (
+              sku &&
+              existing.sku === sku
+            ) {
+              throw new AppError(
+                `Item Code "${sku}" already exists`,
+                409,
+              );
+            }
+
+            if (
+              barcode &&
+              existing.barcode === barcode
+            ) {
+              throw new AppError(
+                `Barcode "${barcode}" already exists`,
+                409,
+              );
+            }
+
+            if (
+              imei &&
+              existing.imei === imei
+            ) {
+              throw new AppError(
+                `IMEI "${imei}" already exists`,
+                409,
+              );
+            }
+
+            throw new AppError(
+              "An item with one of these identifiers already exists",
+              409,
+            );
+          }
+
+          const created =
+            await tx.item.create({
+              data: {
+                businessId,
+
+                name: data.name.trim(),
+
+                sku,
+                barcode,
+                imei,
+
+                categoryId:
+                  data.categoryId ||
+                  null,
+
+                brandId:
+                  data.brandId ||
+                  null,
+
+                unitId:
+                  data.unitId ||
+                  null,
+
+                description:
+                  normalizeOptionalString(
+                    data.description,
+                  ),
+
+                purchasePrice:
+                  toDecimal(
+                    data.purchasePrice ??
+                      0,
+                  ) as any,
+
+                salePrice:
+                  toDecimal(
+                    data.salePrice ??
+                      0,
+                  ) as any,
+
+                mrp:
+                  data.mrp != null
+                    ? (toDecimal(
+                        data.mrp,
+                      ) as any)
+                    : null,
+
+                openingStock:
+                  openingStock as any,
+
+                currentStock:
+                  openingStock as any,
+
+                minimumStock:
+                  toDecimal(
+                    data.minimumStock ??
+                      0,
+                  ) as any,
+
+                gstRate:
+                  toDecimal(
+                    data.gstRate ?? 18,
+                  ) as any,
+
+                hsnSac:
+                  normalizeOptionalString(
+                    data.hsnSac,
+                  ),
+
+                discountPercent:
+                  toDecimal(
+                    data.discountPercent ??
+                      0,
+                  ) as any,
+
+                supplierId:
+                  data.supplierId ||
+                  null,
+
+                trackBatch:
+                  Boolean(
+                    data.trackBatch,
+                  ),
+
+                trackSerial,
+
+                trackExpiry:
+                  Boolean(
+                    data.trackExpiry,
+                  ),
+              },
+            });
+
+          if (openingStock.gt(0)) {
+            await tx.stockMovement.create({
+              data: {
+                businessId,
+
+                itemId: created.id,
+
+                type: "OPENING",
+
+                quantityIn:
+                  openingStock as any,
+
+                quantityOut:
+                  toDecimal(0) as any,
+
+                balance:
+                  openingStock as any,
+
+                notes: "Opening stock",
+              },
+            });
+          }
+
+          await tx.auditLog.create({
+            data: {
+              businessId,
+
+              userId:
+                userId || null,
+
+              action: "CREATE",
+
+              module: "items",
+
+              recordId:
+                created.id,
+
+              recordName:
+                created.name,
+
+              details:
+                JSON.stringify({
+                  sku,
+                  barcode,
+                  imei,
+                  trackSerial,
+                  openingStock:
+                    openingStock.toString(),
+                }),
+            },
+          });
+
+          return created;
         },
-      });
-    }
+      );
 
-    await tx.auditLog.create({
-      data: {
-        businessId,
-        userId: userId || null,
-        action: 'CREATE',
-        module: 'items',
-        recordId: created.id,
-        recordName: created.name,
-        details: JSON.stringify({
-          sku,
-          barcode,
-          imei,
-          trackSerial,
-        }),
-      },
-    });
-
-    return created;
-  });
-
-  return item;
+    return item;
+  } catch (error) {
+    handleItemUniqueError(error);
+  }
 }
+
+/* =========================================================
+   UPDATE ITEM
+========================================================= */
 
 export async function updateItem(
   businessId: string,
   id: string,
   data: any,
-  userId?: string
+  userId?: string,
 ) {
-  const existing = await prisma.item.findFirst({
-    where: {
-      id,
-      businessId,
-      deletedAt: null,
-    },
-  });
+  const existing =
+    await prisma.item.findFirst({
+      where: {
+        id,
+        businessId,
+        deletedAt: null,
+      },
+    });
 
   if (!existing) {
-    throw new AppError('Item not found', 404);
+    throw new AppError(
+      "Item not found",
+      404,
+    );
   }
 
   const sku =
     data.sku !== undefined
-      ? typeof data.sku === 'string' && data.sku.trim()
-        ? data.sku.trim()
-        : null
+      ? normalizeOptionalString(
+          data.sku,
+        )
       : existing.sku;
 
   const barcode =
     data.barcode !== undefined
-      ? typeof data.barcode === 'string' && data.barcode.trim()
-        ? data.barcode.trim()
-        : null
+      ? normalizeOptionalString(
+          data.barcode,
+        )
       : existing.barcode;
 
   const imei =
     data.imei !== undefined
-      ? typeof data.imei === 'string' && data.imei.trim()
-        ? data.imei.trim()
-        : null
+      ? normalizeOptionalString(
+          data.imei,
+        )
       : existing.imei;
 
   const trackSerial =
@@ -359,257 +651,418 @@ export async function updateItem(
       : existing.trackSerial;
 
   if (trackSerial) {
-    if (!imei) {
-      throw new AppError(
-        'IMEI number is required for serialized items',
-        400
-      );
-    }
-
-    if (!/^\d{15}$/.test(imei)) {
-      throw new AppError(
-        'IMEI number must contain exactly 15 digits',
-        400
-      );
-    }
+    validateImei(imei);
   }
 
-  const duplicate = await prisma.item.findFirst({
-    where: {
-      businessId,
-      deletedAt: null,
-      id: { not: id },
-      OR: [
-        ...(sku ? [{ sku }] : []),
-        ...(barcode ? [{ barcode }] : []),
-        ...(imei ? [{ imei }] : []),
-      ],
-    },
-    select: {
-      id: true,
-      sku: true,
-      barcode: true,
-      imei: true,
-    },
-  });
-
-  if (duplicate) {
-    if (sku && duplicate.sku === sku) {
-      throw new AppError(
-        `Item Code "${sku}" already exists`,
-        409
-      );
-    }
-
-    if (barcode && duplicate.barcode === barcode) {
-      throw new AppError(
-        `Barcode "${barcode}" already exists`,
-        409
-      );
-    }
-
-    if (imei && duplicate.imei === imei) {
-      throw new AppError(
-        `IMEI "${imei}" already exists`,
-        409
-      );
-    }
-
+  if (!trackSerial && imei) {
     throw new AppError(
-      'Another item already uses one of these identifiers',
-      409
+      "An IMEI can only be assigned when serial tracking is enabled",
+      400,
+    );
+  }
+
+  /*
+   * Do not allow a serialized item to be converted into
+   * a non-serialized item while its IMEI still exists.
+   */
+  if (
+    existing.trackSerial &&
+    !trackSerial &&
+    existing.currentStock.gt(0)
+  ) {
+    throw new AppError(
+      "A serialized item with available stock cannot disable serial tracking",
+      400,
     );
   }
 
   try {
-    const item = await prisma.item.update({
-      where: { id },
+    const item =
+      await prisma.$transaction(
+        async (tx) => {
+          const duplicate =
+            await tx.item.findFirst({
+              where: {
+                businessId,
+                deletedAt: null,
 
-      data: {
-        name:
-          data.name !== undefined
-            ? data.name.trim()
-            : existing.name,
+                id: {
+                  not: id,
+                },
 
-        sku,
-        barcode,
-        imei,
+                OR: [
+                  ...(sku
+                    ? [{ sku }]
+                    : []),
 
-        categoryId:
-          data.categoryId !== undefined
-            ? data.categoryId
-            : existing.categoryId,
+                  ...(barcode
+                    ? [{ barcode }]
+                    : []),
 
-        brandId:
-          data.brandId !== undefined
-            ? data.brandId
-            : existing.brandId,
+                  ...(imei
+                    ? [{ imei }]
+                    : []),
+                ],
+              },
 
-        unitId:
-          data.unitId !== undefined
-            ? data.unitId
-            : existing.unitId,
+              select: {
+                id: true,
+                sku: true,
+                barcode: true,
+                imei: true,
+              },
+            });
 
-        description:
-          data.description !== undefined
-            ? data.description?.trim() || null
-            : existing.description,
+          if (duplicate) {
+            if (
+              sku &&
+              duplicate.sku === sku
+            ) {
+              throw new AppError(
+                `Item Code "${sku}" already exists`,
+                409,
+              );
+            }
 
-        purchasePrice:
-          data.purchasePrice !== undefined
-            ? (toDecimal(data.purchasePrice) as any)
-            : existing.purchasePrice,
+            if (
+              barcode &&
+              duplicate.barcode === barcode
+            ) {
+              throw new AppError(
+                `Barcode "${barcode}" already exists`,
+                409,
+              );
+            }
 
-        salePrice:
-          data.salePrice !== undefined
-            ? (toDecimal(data.salePrice) as any)
-            : existing.salePrice,
+            if (
+              imei &&
+              duplicate.imei === imei
+            ) {
+              throw new AppError(
+                `IMEI "${imei}" already exists`,
+                409,
+              );
+            }
 
-        mrp:
-          data.mrp !== undefined
-            ? data.mrp != null
-              ? (toDecimal(data.mrp) as any)
-              : null
-            : existing.mrp,
+            throw new AppError(
+              "Another item already uses one of these identifiers",
+              409,
+            );
+          }
 
-        minimumStock:
-          data.minimumStock !== undefined
-            ? (toDecimal(data.minimumStock) as any)
-            : existing.minimumStock,
+          const updated =
+            await tx.item.update({
+              where: {
+                id,
+              },
 
-        gstRate:
-          data.gstRate !== undefined
-            ? (toDecimal(data.gstRate) as any)
-            : existing.gstRate,
+              data: {
+                name:
+                  data.name !==
+                  undefined
+                    ? data.name.trim()
+                    : existing.name,
 
-        hsnSac:
-          data.hsnSac !== undefined
-            ? data.hsnSac?.trim() || null
-            : existing.hsnSac,
+                sku,
+                barcode,
+                imei,
 
-        discountPercent:
-          data.discountPercent !== undefined
-            ? (toDecimal(data.discountPercent) as any)
-            : existing.discountPercent,
+                categoryId:
+                  data.categoryId !==
+                  undefined
+                    ? data.categoryId
+                    : existing.categoryId,
 
-        supplierId:
-          data.supplierId !== undefined
-            ? data.supplierId
-            : existing.supplierId,
+                brandId:
+                  data.brandId !==
+                  undefined
+                    ? data.brandId
+                    : existing.brandId,
 
-        trackBatch:
-          data.trackBatch !== undefined
-            ? Boolean(data.trackBatch)
-            : existing.trackBatch,
+                unitId:
+                  data.unitId !==
+                  undefined
+                    ? data.unitId
+                    : existing.unitId,
 
-        trackSerial,
-        trackExpiry:
-          data.trackExpiry !== undefined
-            ? Boolean(data.trackExpiry)
-            : existing.trackExpiry,
-      },
-    });
+                description:
+                  data.description !==
+                  undefined
+                    ? normalizeOptionalString(
+                        data.description,
+                      )
+                    : existing.description,
 
-    await prisma.auditLog.create({
-      data: {
-        businessId,
-        userId: userId || null,
-        action: 'UPDATE',
-        module: 'items',
-        recordId: id,
-        recordName: item.name,
-        details: JSON.stringify({
-          sku,
-          barcode,
-          imei,
-          trackSerial,
-        }),
-      },
-    });
+                purchasePrice:
+                  data.purchasePrice !==
+                  undefined
+                    ? (toDecimal(
+                        data.purchasePrice,
+                      ) as any)
+                    : existing.purchasePrice,
+
+                salePrice:
+                  data.salePrice !==
+                  undefined
+                    ? (toDecimal(
+                        data.salePrice,
+                      ) as any)
+                    : existing.salePrice,
+
+                mrp:
+                  data.mrp !== undefined
+                    ? data.mrp != null
+                      ? (toDecimal(
+                          data.mrp,
+                        ) as any)
+                      : null
+                    : existing.mrp,
+
+                minimumStock:
+                  data.minimumStock !==
+                  undefined
+                    ? (toDecimal(
+                        data.minimumStock,
+                      ) as any)
+                    : existing.minimumStock,
+
+                gstRate:
+                  data.gstRate !==
+                  undefined
+                    ? (toDecimal(
+                        data.gstRate,
+                      ) as any)
+                    : existing.gstRate,
+
+                hsnSac:
+                  data.hsnSac !==
+                  undefined
+                    ? normalizeOptionalString(
+                        data.hsnSac,
+                      )
+                    : existing.hsnSac,
+
+                discountPercent:
+                  data.discountPercent !==
+                  undefined
+                    ? (toDecimal(
+                        data.discountPercent,
+                      ) as any)
+                    : existing.discountPercent,
+
+                supplierId:
+                  data.supplierId !==
+                  undefined
+                    ? data.supplierId
+                    : existing.supplierId,
+
+                trackBatch:
+                  data.trackBatch !==
+                  undefined
+                    ? Boolean(
+                        data.trackBatch,
+                      )
+                    : existing.trackBatch,
+
+                trackSerial,
+
+                trackExpiry:
+                  data.trackExpiry !==
+                  undefined
+                    ? Boolean(
+                        data.trackExpiry,
+                      )
+                    : existing.trackExpiry,
+              },
+            });
+
+          await tx.auditLog.create({
+            data: {
+              businessId,
+
+              userId:
+                userId || null,
+
+              action: "UPDATE",
+
+              module: "items",
+
+              recordId: id,
+
+              recordName:
+                updated.name,
+
+              details:
+                JSON.stringify({
+                  sku,
+                  barcode,
+                  imei,
+                  trackSerial,
+                }),
+            },
+          });
+
+          return updated;
+        },
+      );
 
     return item;
-  } catch (error: any) {
-    if (error?.code === 'P2002') {
-      const target = Array.isArray(error.meta?.target)
-        ? error.meta.target.join(', ')
-        : '';
-
-      if (target.includes('imei')) {
-        throw new AppError(
-          'This IMEI already exists for this business',
-          409
-        );
-      }
-
-      if (target.includes('sku')) {
-        throw new AppError(
-          'This Item Code already exists for this business',
-          409
-        );
-      }
-
-      if (target.includes('barcode')) {
-        throw new AppError(
-          'This barcode already exists for this business',
-          409
-        );
-      }
-
-      throw new AppError(
-        'An item with one of these identifiers already exists',
-        409
-      );
-    }
-
-    throw error;
+  } catch (error) {
+    handleItemUniqueError(error);
   }
 }
+
+/* =========================================================
+   DELETE / ARCHIVE ITEM
+========================================================= */
 
 export async function deleteItem(
   businessId: string,
   id: string,
   userId?: string,
 ) {
-  const existing = await prisma.item.findFirst({
-    where: { id, businessId, deletedAt: null },
-  });
-  if (!existing) throw new AppError("Item not found", 404);
+  const existing =
+    await prisma.item.findFirst({
+      where: {
+        id,
+        businessId,
+        deletedAt: null,
+      },
+    });
 
-  await prisma.item.update({
-    where: { id },
-    data: { deletedAt: new Date(), status: "ARCHIVED" },
-  });
+  if (!existing) {
+    throw new AppError(
+      "Item not found",
+      404,
+    );
+  }
 
-  await prisma.auditLog.create({
-    data: {
-      businessId,
-      userId: userId || null,
-      action: "DELETE",
-      module: "items",
-      recordId: id,
-      recordName: existing.name,
+  if (existing.currentStock.gt(0)) {
+    throw new AppError(
+      "Cannot archive an item while stock is available",
+      400,
+    );
+  }
+
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.item.update({
+        where: {
+          id,
+        },
+
+        data: {
+          deletedAt: new Date(),
+          status: "ARCHIVED",
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          businessId,
+
+          userId:
+            userId || null,
+
+          action: "DELETE",
+
+          module: "items",
+
+          recordId: id,
+
+          recordName:
+            existing.name,
+        },
+      });
     },
-  });
+  );
 
-  return { message: "Item archived successfully" };
+  return {
+    message:
+      "Item archived successfully",
+  };
 }
 
-export async function searchByBarcode(businessId: string, barcode: string) {
-  const item = await prisma.item.findFirst({
-    where: { businessId, barcode, deletedAt: null, status: "ACTIVE" },
-    include: {
-      unit: { select: { shortName: true } },
-      category: { select: { name: true } },
-    },
-  });
-  if (!item) throw new AppError("Item not found for barcode", 404);
+/* =========================================================
+   BARCODE SEARCH
+========================================================= */
+
+export async function searchByBarcode(
+  businessId: string,
+  barcode: string,
+) {
+  const normalized =
+    barcode.trim();
+
+  if (!normalized) {
+    throw new AppError(
+      "Barcode is required",
+      400,
+    );
+  }
+
+  const item =
+    await prisma.item.findFirst({
+      where: {
+        businessId,
+
+        barcode: normalized,
+
+        deletedAt: null,
+
+        status: "ACTIVE",
+      },
+
+      include: {
+        unit: {
+          select: {
+            id: true,
+            name: true,
+            shortName: true,
+          },
+        },
+
+        category: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+
+        brand: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+  if (!item) {
+    throw new AppError(
+      "Item not found for barcode",
+      404,
+    );
+  }
+
   return item;
 }
-export async function searchBySku(businessId: string, sku: string) {
+
+/* =========================================================
+   ITEM CODE / SKU SEARCH
+========================================================= */
+
+export async function searchBySku(
+  businessId: string,
+  sku: string
+) {
   const normalizedSku = sku.trim();
 
   if (!normalizedSku) {
-    throw new AppError('Item Code is required', 400);
+    throw new AppError(
+      "Item Code is required",
+      400
+    );
   }
 
   const item = await prisma.item.findFirst({
@@ -617,8 +1070,9 @@ export async function searchBySku(businessId: string, sku: string) {
       businessId,
       sku: normalizedSku,
       deletedAt: null,
-      status: 'ACTIVE',
+      status: "ACTIVE",
     },
+
     include: {
       category: {
         select: {
@@ -626,12 +1080,14 @@ export async function searchBySku(businessId: string, sku: string) {
           name: true,
         },
       },
+
       brand: {
         select: {
           id: true,
           name: true,
         },
       },
+
       unit: {
         select: {
           id: true,
@@ -639,21 +1095,154 @@ export async function searchBySku(businessId: string, sku: string) {
           shortName: true,
         },
       },
+
       supplier: {
         select: {
           id: true,
           name: true,
         },
       },
+
+      inventoryUnits: {
+        where: {
+          status: {
+            in: ["AVAILABLE", "RETURNED"],
+          },
+        },
+
+        orderBy: {
+          createdAt: "asc",
+        },
+
+        select: {
+          id: true,
+          imei: true,
+          serialNumber: true,
+          status: true,
+          purchasePrice: true,
+        },
+      },
     },
   });
 
   if (!item) {
-    throw new AppError(`Item Code "${normalizedSku}" not found`, 404);
+    throw new AppError(
+      `Item Code "${normalizedSku}" not found`,
+      404
+    );
+  }
+
+  return {
+    id: item.id,
+    businessId: item.businessId,
+
+    itemCode: item.sku,
+
+    name: item.name,
+
+    barcode: item.barcode,
+
+    description: item.description,
+
+    purchasePrice: item.purchasePrice,
+    salePrice: item.salePrice,
+    mrp: item.mrp,
+
+    currentStock: item.currentStock,
+    minimumStock: item.minimumStock,
+
+    gstRate: item.gstRate,
+    hsnSac: item.hsnSac,
+    discountPercent: item.discountPercent,
+
+    trackSerial: item.trackSerial,
+    trackBatch: item.trackBatch,
+    trackExpiry: item.trackExpiry,
+
+    category: item.category,
+    brand: item.brand,
+    unit: item.unit,
+    supplier: item.supplier,
+
+    /*
+     * Available physical units.
+     *
+     * For normal products this will be empty.
+     * For phone/device products this contains the
+     * available IMEI/serial numbers.
+     */
+    inventoryUnits: item.inventoryUnits,
+
+    availableInventoryUnits:
+      item.inventoryUnits.length,
+
+    /*
+     * Backward compatibility for existing data.
+     *
+     * Existing products may still have Item.imei
+     * until the migration/backfill is completed.
+     */
+    legacyImei: item.imei,
+  };
+}
+
+/* =========================================================
+   IMEI SEARCH
+========================================================= */
+
+export async function searchByImei(
+  businessId: string,
+  imei: string,
+) {
+  const normalizedImei =
+    imei.trim();
+
+  if (!/^\d{15}$/.test(normalizedImei)) {
+    throw new AppError(
+      "IMEI must contain exactly 15 digits",
+      400,
+    );
+  }
+
+  const item =
+    await prisma.item.findFirst({
+      where: {
+        businessId,
+
+        imei: normalizedImei,
+
+        deletedAt: null,
+
+        status: "ACTIVE",
+      },
+
+      include: {
+        category: true,
+        brand: true,
+        unit: true,
+        supplier: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+  if (!item) {
+    throw new AppError(
+      `IMEI "${normalizedImei}" not found`,
+      404,
+    );
   }
 
   return item;
 }
+
+/* =========================================================
+   ADJUST STOCK
+========================================================= */
+
 export async function adjustStock(
   businessId: string,
   itemId: string,
@@ -662,46 +1251,241 @@ export async function adjustStock(
   notes?: string,
   userId?: string,
 ) {
-  const item = await prisma.item.findFirst({
-    where: { id: itemId, businessId, deletedAt: null },
-  });
-  if (!item) throw new AppError("Item not found", 404);
+  if (
+    !Number.isFinite(quantity) ||
+    quantity === 0
+  ) {
+    throw new AppError(
+      "Stock adjustment quantity must be a non-zero number",
+      400,
+    );
+  }
 
-  const qty = toDecimal(quantity);
-  const newStock = toDecimal(item.currentStock).plus(qty);
-  if (newStock.lt(0)) throw new AppError("Stock cannot go negative", 400);
+  if (
+    typeof reason !== "string" ||
+    !reason.trim()
+  ) {
+    throw new AppError(
+      "Adjustment reason is required",
+      400,
+    );
+  }
 
-  const result = await prisma.$transaction(async (tx) => {
-    const updated = await tx.item.update({
-      where: { id: itemId },
-      data: { currentStock: newStock as any },
-    });
+  const qty =
+    toDecimal(quantity);
 
-    await tx.stockAdjustment.create({
-      data: {
-        businessId,
-        itemId,
-        quantity: qty as any,
-        reason,
-        notes: notes || null,
-        createdById: userId || null,
-      },
-    });
+  return prisma.$transaction(
+    async (tx) => {
+      const item =
+        await tx.item.findFirst({
+          where: {
+            id: itemId,
 
-    await tx.stockMovement.create({
-      data: {
-        businessId,
-        itemId,
-        type: "ADJUSTMENT",
-        quantityIn: qty.gt(0) ? (qty as any) : (toDecimal(0) as any),
-        quantityOut: qty.lt(0) ? (qty.abs() as any) : (toDecimal(0) as any),
-        balance: newStock as any,
-        notes: reason,
-      },
-    });
+            businessId,
 
-    return updated;
-  });
+            deletedAt: null,
 
-  return result;
+            status: "ACTIVE",
+          },
+
+          select: {
+            id: true,
+            name: true,
+            trackSerial: true,
+            currentStock: true,
+          },
+        });
+
+      if (!item) {
+        throw new AppError(
+          "Item not found",
+          404,
+        );
+      }
+
+      /*
+       * Serialized items represent one physical device.
+       */
+      if (
+        item.trackSerial &&
+        qty.gt(0) &&
+        toDecimal(
+          item.currentStock,
+        ).plus(qty).gt(1)
+      ) {
+        throw new AppError(
+          "Serialized items cannot have stock greater than 1",
+          400,
+        );
+      }
+
+      /*
+       * Atomic conditional update.
+       *
+       * This prevents two simultaneous stock adjustments
+       * from both reading the same old stock value.
+       */
+      const updated =
+        qty.lt(0)
+          ? await tx.item.updateMany({
+              where: {
+                id: item.id,
+
+                businessId,
+
+                deletedAt: null,
+
+                status: "ACTIVE",
+
+                currentStock: {
+                  gte: qty.abs() as any,
+                },
+              },
+
+              data: {
+                currentStock: {
+                  decrement:
+                    qty.abs() as any,
+                },
+              },
+            })
+          : await tx.item.updateMany({
+              where: {
+                id: item.id,
+
+                businessId,
+
+                deletedAt: null,
+
+                status: "ACTIVE",
+              },
+
+              data: {
+                currentStock: {
+                  increment:
+                    qty as any,
+                },
+              },
+            });
+
+      if (updated.count !== 1) {
+        throw new AppError(
+          "Stock changed while processing this adjustment. Please retry.",
+          409,
+        );
+      }
+
+      const updatedItem =
+        await tx.item.findUnique({
+          where: {
+            id: item.id,
+          },
+
+          select: {
+            id: true,
+            name: true,
+            currentStock: true,
+          },
+        });
+
+      if (!updatedItem) {
+        throw new AppError(
+          "Item no longer exists",
+          409,
+        );
+      }
+
+      await tx.stockAdjustment.create({
+        data: {
+          businessId,
+
+          itemId: item.id,
+
+          quantity: qty as any,
+
+          reason: reason.trim(),
+
+          notes:
+            notes?.trim() || null,
+
+          createdById:
+            userId || null,
+        },
+      });
+
+      await tx.stockMovement.create({
+        data: {
+          businessId,
+
+          itemId: item.id,
+
+          type: "ADJUSTMENT",
+
+          quantityIn:
+            qty.gt(0)
+              ? (qty as any)
+              : (toDecimal(0) as any),
+
+          quantityOut:
+            qty.lt(0)
+              ? (qty.abs() as any)
+              : (toDecimal(0) as any),
+
+          balance:
+            updatedItem.currentStock as any,
+
+          referenceType:
+            "stock_adjustment",
+
+          referenceId:
+            item.id,
+
+          notes:
+            reason.trim(),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          businessId,
+
+          userId:
+            userId || null,
+
+          action: "UPDATE",
+
+          module: "inventory",
+
+          recordId: item.id,
+
+          recordName:
+            item.name,
+
+          details:
+            JSON.stringify({
+              type: "STOCK_ADJUSTMENT",
+
+              quantity:
+                qty.toString(),
+
+              balance:
+                updatedItem.currentStock.toString(),
+
+              reason:
+                reason.trim(),
+            }),
+        },
+      });
+
+      return updatedItem;
+    },
+    {
+      isolationLevel:
+        "Serializable" as any,
+
+      maxWait: 10_000,
+
+      timeout: 20_000,
+    },
+  );
 }

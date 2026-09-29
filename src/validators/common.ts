@@ -206,27 +206,133 @@ export const itemSchema = z.object({
 });
 
 export const saleItemSchema = z.object({
-  itemId: z.string().uuid().optional().nullable(),
-  itemName: z.string().min(1),
-  hsnSac: z.string().optional().or(z.literal('')),
-  quantity: z.coerce.number().positive('Quantity must be positive'),
-  unit: z.string().optional().or(z.literal('')),
-  rate: z.coerce.number().min(0),
-  discountPercent: z.coerce.number().min(0).max(100).default(0),
-  gstRate: z.coerce.number().min(0).max(100).default(0),
+  itemId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
+
+  itemName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200),
+
+  hsnSac: z
+    .string()
+    .trim()
+    .max(20)
+    .optional()
+    .or(z.literal("")),
+
+  quantity: z
+    .coerce
+    .number()
+    .finite()
+    .positive(
+      "Quantity must be positive",
+    ),
+
+  unit: z
+    .string()
+    .trim()
+    .max(50)
+    .optional()
+    .or(z.literal("")),
+
+  rate: z
+    .coerce
+    .number()
+    .finite()
+    .min(0),
+
+  discountPercent: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .max(100)
+    .default(0),
+
+  gstRate: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .max(100)
+    .default(0),
 });
 
 export const saleSchema = z.object({
-  customerId: z.string().uuid().optional().nullable(),
-  date: z.coerce.date().optional(),
-  dueDate: z.coerce.date().optional().nullable(),
-  placeOfSupply: z.string().optional().or(z.literal('')),
-  items: z.array(saleItemSchema).min(1, 'At least one item is required'),
-  paymentMethod: z.string().optional().or(z.literal('')),
-  paidAmount: z.coerce.number().min(0).default(0),
-  notes: z.string().optional().or(z.literal('')),
-  terms: z.string().optional().or(z.literal('')),
-  status: z.enum(['DRAFT', 'UNPAID', 'PARTIALLY_PAID', 'PAID']).optional(),
+  customerId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
+
+  date: z
+    .coerce
+    .date()
+    .optional(),
+
+  dueDate: z
+    .coerce
+    .date()
+    .optional()
+    .nullable(),
+
+  placeOfSupply: z
+    .string()
+    .trim()
+    .max(100)
+    .optional()
+    .or(z.literal("")),
+
+  items: z
+    .array(saleItemSchema)
+    .min(
+      1,
+      "At least one item is required",
+    )
+    .max(
+      100,
+      "A sale cannot contain more than 100 items",
+    ),
+
+  paymentMethod: z
+    .string()
+    .trim()
+    .max(50)
+    .optional()
+    .or(z.literal("")),
+
+  paidAmount: z
+    .coerce
+    .number()
+    .finite()
+    .min(0)
+    .default(0),
+
+  notes: z
+    .string()
+    .max(5000)
+    .optional()
+    .or(z.literal("")),
+
+  terms: z
+    .string()
+    .max(5000)
+    .optional()
+    .or(z.literal("")),
+
+  status: z
+    .enum([
+      "DRAFT",
+      "UNPAID",
+      "PARTIALLY_PAID",
+      "PAID",
+    ])
+    .optional(),
 });
 
 export const purchaseSchema = z.object({
