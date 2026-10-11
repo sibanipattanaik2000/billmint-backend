@@ -8,6 +8,7 @@ import * as customersService from '../services/customers.service';
 import * as itemsService from '../services/items.service';
 import * as salesService from '../services/sales.service';
 import purchasesRoutes from './purchases.routes';
+import suppliersRoutes from "./suppliers.routes";
 import {
   customerSchema,
   itemSchema,
@@ -20,6 +21,7 @@ const router = Router();
 
 router.use('/auth', authRoutes);
 router.use('/purchases', purchasesRoutes);
+router.use("/suppliers", suppliersRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */

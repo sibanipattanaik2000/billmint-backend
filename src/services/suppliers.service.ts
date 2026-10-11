@@ -2,7 +2,7 @@ import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
 import { toDecimal } from "../utils/money";
 
-type SupplierStatus = "ACTIVE" | "INACTIVE" | "ARCHIVED";
+type SupplierStatus = "ACTIVE" | "ARCHIVED";
 
 interface SupplierListOptions {
   page?: number;
@@ -76,7 +76,6 @@ function normalizeStatus(status?: string): SupplierStatus | undefined {
 
   if (
     normalized !== "ACTIVE" &&
-    normalized !== "INACTIVE" &&
     normalized !== "ARCHIVED"
   ) {
     throw new AppError("Invalid supplier status", 400);
