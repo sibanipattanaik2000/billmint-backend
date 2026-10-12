@@ -138,11 +138,6 @@ export async function updateOtherIncome(
   if (input.notes != null && input.notes.length > 5000) {
     throw new AppError("Notes cannot exceed 5000 characters", 400);
   }
-
-  if (input.reference != null && input.reference.trim().length > 200) {
-    throw new AppError("Reference cannot exceed 200 characters", 400);
-  }
-
   if (
     input.paymentMethod !== undefined &&
     (!input.paymentMethod.trim() || input.paymentMethod.trim().length > 50)
@@ -218,9 +213,6 @@ export async function updateOtherIncome(
             : {}),
           ...(input.notes !== undefined
             ? { notes: clean(input.notes) }
-            : {}),
-          ...(input.reference !== undefined
-            ? { reference: clean(input.reference) }
             : {}),
         },
         include: {
