@@ -1071,6 +1071,8 @@ enum BankTxnType {
   PAYMENT
   RECEIPT
   OPENING
+  ADJUSTMENT
+
 }
 
 enum ImportStatus {

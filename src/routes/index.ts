@@ -10,6 +10,8 @@ import * as salesService from '../services/sales.service';
 import purchasesRoutes from './purchases.routes';
 import suppliersRoutes from "./suppliers.routes";
 import expensesRoutes from "./expenses.routes";
+import otherIncomeRoutes from "./other-income.routes";
+import paymentsRoutes from "./payments.routes";
 import {
   customerSchema,
   itemSchema,
@@ -24,6 +26,8 @@ router.use('/auth', authRoutes);
 router.use('/purchases', purchasesRoutes);
 router.use("/suppliers", suppliersRoutes);
 router.use("/expenses", expensesRoutes);
+router.use("/other-income", otherIncomeRoutes);
+router.use("/payments", paymentsRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */
