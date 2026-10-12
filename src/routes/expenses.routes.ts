@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authenticate, type AuthRequest } from "../middleware/auth";
 import { asyncHandler, AppError } from "../middleware/errorHandler";
 import * as expensesService from "../services/expenses.service";
-
+import * as expenseMutationsService from "../services/expense-mutations.service";
 const router = Router();
 
 const expenseSchema = z.object({
@@ -143,6 +143,52 @@ router.post(
     );
 
     return res.status(201).json({
+      success: true,
+      data,
+    });
+  }),
+);
+
+/**
+ * PATCH /expenses/:id
+ * Update an expense and reconcile its cash/bank balance.
+ */
+router.patch(
+  "/:id",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
+    const input = expenseSchema.partial().parse(req.body);
+
+    const data = await expenseMutationsService.updateExpense(
+      req.businessId!,
+      id,
+      input,
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  }),
+);
+
+/**
+ * DELETE /expenses/:id
+ * Delete an expense and reverse its cash/bank impact.
+ */
+router.delete(
+  "/:id",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
+
+    const data = await expenseMutationsService.deleteExpense(
+      req.businessId!,
+      id,
+    );
+
+    return res.status(200).json({
       success: true,
       data,
     });
