@@ -13,6 +13,9 @@ import expensesRoutes from "./expenses.routes";
 import otherIncomeRoutes from "./other-income.routes";
 import paymentsRoutes from "./payments.routes";
 import bankAccountsRoutes from "./bank-accounts.routes";
+import quotationsRoutes from "./quotations.routes";
+import deliveryChallansRoutes from "./delivery-challans.routes";
+import saleReturnsRoutes from "./sale-returns.routes";
 import {
   customerSchema,
   itemSchema,
@@ -30,6 +33,9 @@ router.use("/expenses", expensesRoutes);
 router.use("/other-income", otherIncomeRoutes);
 router.use("/payments", paymentsRoutes);
 router.use("/cash-bank", bankAccountsRoutes);
+router.use("/quotations", quotationsRoutes);
+router.use("/delivery-challans", deliveryChallansRoutes);
+router.use("/sale-returns", saleReturnsRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */
