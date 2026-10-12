@@ -12,6 +12,7 @@ import suppliersRoutes from "./suppliers.routes";
 import expensesRoutes from "./expenses.routes";
 import otherIncomeRoutes from "./other-income.routes";
 import paymentsRoutes from "./payments.routes";
+import bankAccountsRoutes from "./bank-accounts.routes";
 import {
   customerSchema,
   itemSchema,
@@ -28,6 +29,7 @@ router.use("/suppliers", suppliersRoutes);
 router.use("/expenses", expensesRoutes);
 router.use("/other-income", otherIncomeRoutes);
 router.use("/payments", paymentsRoutes);
+router.use("/cash-bank", bankAccountsRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */
