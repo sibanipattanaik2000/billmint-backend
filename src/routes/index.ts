@@ -16,6 +16,7 @@ import bankAccountsRoutes from "./bank-accounts.routes";
 import quotationsRoutes from "./quotations.routes";
 import deliveryChallansRoutes from "./delivery-challans.routes";
 import saleReturnsRoutes from "./sale-returns.routes";
+import purchaseReturnsRoutes from "./purchase-returns.routes";
 import {
   customerSchema,
   itemSchema,
@@ -28,6 +29,7 @@ const router = Router();
 
 router.use('/auth', authRoutes);
 router.use('/purchases', purchasesRoutes);
+router.use("/purchase-returns", purchaseReturnsRoutes);
 router.use("/suppliers", suppliersRoutes);
 router.use("/expenses", expensesRoutes);
 router.use("/other-income", otherIncomeRoutes);
@@ -254,6 +256,30 @@ router.get(
       });
     },
   ),
+);
+router.get(
+  "/stock-adjustments",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const query = paginationSchema.parse(req.query);
+
+    const itemId =
+      typeof req.query.itemId === "string"
+        ? req.query.itemId.trim()
+        : undefined;
+
+    const data = await itemsService.listStockAdjustments(
+      req.businessId!,
+      query.page,
+      query.limit,
+      itemId || undefined,
+    );
+
+    res.json({
+      success: true,
+      ...data,
+    });
+  }),
 );
 router.get(
   '/items/:id',

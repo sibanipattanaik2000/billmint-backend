@@ -1146,23 +1146,16 @@ export async function adjustStock(
       if (!updatedItem) {
         throw new AppError("Item no longer exists", 409);
       }
-
-      await tx.stockAdjustment.create({
+      const adjustment = await tx.stockAdjustment.create({
         data: {
           businessId,
-
           itemId: item.id,
-
           quantity: qty as any,
-
           reason: reason.trim(),
-
           notes: notes?.trim() || null,
-
           createdById: userId || null,
         },
       });
-
       await tx.stockMovement.create({
         data: {
           businessId,
@@ -1179,8 +1172,7 @@ export async function adjustStock(
 
           referenceType: "stock_adjustment",
 
-          referenceId: item.id,
-
+          referenceId: adjustment.id,
           notes: reason.trim(),
         },
       });
@@ -1221,4 +1213,52 @@ export async function adjustStock(
       timeout: 20_000,
     },
   );
+}
+/* =========================================================
+   LIST STOCK ADJUSTMENTS
+========================================================= */
+
+export async function listStockAdjustments(
+  businessId: string,
+  page = 1,
+  limit = 20,
+  itemId?: string,
+) {
+  const safePage = Math.max(1, Math.floor(page) || 1);
+  const safeLimit = Math.min(100, Math.max(1, Math.floor(limit) || 20));
+
+  const where = {
+    businessId,
+    ...(itemId ? { itemId } : {}),
+  };
+
+  const [data, total] = await prisma.$transaction([
+    prisma.stockAdjustment.findMany({
+      where,
+      include: {
+        item: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            currentStock: true,
+          },
+        },
+      },
+      orderBy: [{ date: "desc" }, { id: "desc" }],
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
+    }),
+    prisma.stockAdjustment.count({ where }),
+  ]);
+
+  return {
+    data,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit),
+    },
+  };
 }
