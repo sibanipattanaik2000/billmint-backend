@@ -13,6 +13,8 @@ export type UpdateOtherIncomeInput = {
   bankAccountId?: string | null;
 };
 
+const MAX_AMOUNT = new Prisma.Decimal("9999999999999999.99");
+
 function clean(value?: string | null): string | null {
   if (value == null) return null;
   return value.trim() || null;
@@ -38,6 +40,10 @@ function parseAmount(value: unknown): Prisma.Decimal {
     );
   }
 
+  if (amount.gt(MAX_AMOUNT)) {
+    throw new AppError("Income amount exceeds the allowed limit", 400);
+  }
+
   return amount;
 }
 
@@ -49,6 +55,45 @@ function parseDate(value: Date): Date {
   return value;
 }
 
+function validateInput(input: UpdateOtherIncomeInput): void {
+  if (input.category != null && input.category.trim().length > 200) {
+    throw new AppError("Category cannot exceed 200 characters", 400);
+  }
+
+  if (
+    input.description != null &&
+    input.description.trim().length > 1000
+  ) {
+    throw new AppError("Description cannot exceed 1000 characters", 400);
+  }
+
+  if (input.notes != null && input.notes.length > 5000) {
+    throw new AppError("Notes cannot exceed 5000 characters", 400);
+  }
+
+  if (
+    input.paymentMethod !== undefined &&
+    (!input.paymentMethod.trim() || input.paymentMethod.trim().length > 50)
+  ) {
+    throw new AppError(
+      "Payment method must contain 1–50 characters",
+      400,
+    );
+  }
+
+  if (input.reference != null && input.reference.trim().length > 200) {
+    throw new AppError("Reference cannot exceed 200 characters", 400);
+  }
+
+  if (
+    input.bankAccountId !== undefined &&
+    input.bankAccountId !== null &&
+    !input.bankAccountId.trim()
+  ) {
+    throw new AppError("Invalid cash/bank account", 400);
+  }
+}
+
 async function applyBalanceChange(
   tx: Prisma.TransactionClient,
   args: {
@@ -58,6 +103,7 @@ async function applyBalanceChange(
     direction: "INCREMENT" | "DECREMENT";
     date: Date;
     incomeId: string;
+    referenceType: string;
     description: string;
   },
 ): Promise<void> {
@@ -78,7 +124,7 @@ async function applyBalanceChange(
 
   if (args.direction === "INCREMENT" && account.status !== "ACTIVE") {
     throw new AppError(
-      "Cannot add income to an archived cash/bank account",
+      "Cannot add income to an inactive cash/bank account",
       409,
     );
   }
@@ -101,10 +147,11 @@ async function applyBalanceChange(
       businessId: args.businessId,
       bankAccountId: account.id,
       date: args.date,
-      type: args.direction === "INCREMENT" ? "RECEIPT" : "ADJUSTMENT",
+      // The statement service already treats PAYMENT as an outflow.
+      type: args.direction === "INCREMENT" ? "RECEIPT" : "PAYMENT",
       amount: args.amount,
       balance: updated.currentBalance,
-      referenceType: "OTHER_INCOME",
+      referenceType: args.referenceType,
       referenceId: args.incomeId,
       description: args.description,
     },
@@ -120,34 +167,16 @@ export async function updateOtherIncome(
     throw new AppError("Provide at least one field to update", 400);
   }
 
-  if (input.category != null && input.category.trim().length > 200) {
-    throw new AppError("Category cannot exceed 200 characters", 400);
-  }
-
-  if (input.description != null && input.description.trim().length > 1000) {
-    throw new AppError("Description cannot exceed 1000 characters", 400);
-  }
-
-  if (input.notes != null && input.notes.length > 5000) {
-    throw new AppError("Notes cannot exceed 5000 characters", 400);
-  }
-  if (
-    input.paymentMethod !== undefined &&
-    (!input.paymentMethod.trim() || input.paymentMethod.trim().length > 50)
-  ) {
-    throw new AppError("Payment method must contain 1–50 characters", 400);
-  }
-  if (
-  input.reference != null &&
-  input.reference.trim().length > 200
-) {
-  throw new AppError("Reference cannot exceed 200 characters", 400);
-}
+  validateInput(input);
 
   return prisma.$transaction(
     async (tx) => {
       const existing = await tx.otherIncome.findFirst({
-        where: { id: incomeId, businessId },
+        where: {
+          id: incomeId,
+          businessId,
+          deletedAt: null,
+        },
       });
 
       if (!existing) {
@@ -160,37 +189,49 @@ export async function updateOtherIncome(
           : parseAmount(input.amount);
 
       const date =
-        input.date === undefined ? existing.date : parseDate(input.date);
+        input.date === undefined
+          ? existing.date
+          : parseDate(input.date);
 
       const bankAccountId =
         input.bankAccountId === undefined
           ? existing.bankAccountId
           : clean(input.bankAccountId);
 
-      // Reverse the original recorded income.
-      if (existing.bankAccountId) {
-        await applyBalanceChange(tx, {
-          businessId,
-          accountId: existing.bankAccountId,
-          amount: existing.amount,
-          direction: "DECREMENT",
-          date,
-          incomeId,
-          description: "Income edit: reverse previous amount",
-        });
-      }
+      const amountChanged = !amount.equals(existing.amount);
+      const accountChanged = bankAccountId !== existing.bankAccountId;
+      const dateChanged = date.getTime() !== existing.date.getTime();
 
-      // Apply the corrected income to the selected account.
-      if (bankAccountId) {
-        await applyBalanceChange(tx, {
-          businessId,
-          accountId: bankAccountId,
-          amount,
-          direction: "INCREMENT",
-          date,
-          incomeId,
-          description: "Income edit: apply corrected amount",
-        });
+      // Only create ledger entries when a financial field changes.
+      const ledgerChanged =
+        amountChanged || accountChanged || dateChanged;
+
+      if (ledgerChanged) {
+        if (existing.bankAccountId) {
+          await applyBalanceChange(tx, {
+            businessId,
+            accountId: existing.bankAccountId,
+            amount: existing.amount,
+            direction: "DECREMENT",
+            date: new Date(),
+            incomeId,
+            referenceType: "OTHER_INCOME_CORRECTION",
+            description: "Other income correction: reverse previous entry",
+          });
+        }
+
+        if (bankAccountId) {
+          await applyBalanceChange(tx, {
+            businessId,
+            accountId: bankAccountId,
+            amount,
+            direction: "INCREMENT",
+            date,
+            incomeId,
+            referenceType: "OTHER_INCOME",
+            description: "Other income correction: apply updated entry",
+          });
+        }
       }
 
       return tx.otherIncome.update({
@@ -208,7 +249,9 @@ export async function updateOtherIncome(
           ...(input.description !== undefined
             ? { description: clean(input.description) }
             : {}),
-          ...(input.notes !== undefined ? { notes: clean(input.notes) } : {}),
+          ...(input.notes !== undefined
+            ? { notes: clean(input.notes) }
+            : {}),
           ...(input.reference !== undefined
             ? { reference: clean(input.reference) }
             : {}),
@@ -226,11 +269,18 @@ export async function updateOtherIncome(
   );
 }
 
-export async function deleteOtherIncome(businessId: string, incomeId: string) {
+export async function deleteOtherIncome(
+  businessId: string,
+  incomeId: string,
+) {
   return prisma.$transaction(
     async (tx) => {
       const existing = await tx.otherIncome.findFirst({
-        where: { id: incomeId, businessId },
+        where: {
+          id: incomeId,
+          businessId,
+          deletedAt: null,
+        },
       });
 
       if (!existing) {
@@ -245,18 +295,20 @@ export async function deleteOtherIncome(businessId: string, incomeId: string) {
           direction: "DECREMENT",
           date: new Date(),
           incomeId,
-          description: "Income deleted: reverse recorded amount",
+          referenceType: "OTHER_INCOME_VOID",
+          description: "Other income voided: reverse recorded amount",
         });
       }
 
-      await tx.otherIncome.delete({
+      await tx.otherIncome.update({
         where: { id: existing.id },
+        data: { deletedAt: new Date() },
       });
 
       return {
         id: existing.id,
         deleted: true,
-        message: "Income deleted and account balance adjusted",
+        message: "Income voided and account balance adjusted",
       };
     },
     {

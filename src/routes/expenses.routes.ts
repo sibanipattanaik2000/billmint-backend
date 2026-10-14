@@ -75,7 +75,11 @@ router.get(
       from,
       to,
     });
-
+console.log("[EXPENSES CHECK]", {
+  count: result.data.length,
+  pagination: result.pagination,
+  summary: result.summary,
+});
     return res.json({
       success: true,
       ...result,
