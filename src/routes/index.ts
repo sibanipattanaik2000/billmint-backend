@@ -1,8 +1,8 @@
 import { Router, Response } from 'express';
 import authRoutes from './auth.routes';
 import { authenticate, AuthRequest } from '../middleware/auth';
-import { asyncHandler } from '../middleware/errorHandler';
-
+import { asyncHandler, AppError } from '../middleware/errorHandler';
+import { z } from "zod";
 import * as dashboardService from '../services/dashboard.service';
 import * as customersService from '../services/customers.service';
 import * as itemsService from '../services/items.service';
@@ -17,6 +17,10 @@ import quotationsRoutes from "./quotations.routes";
 import deliveryChallansRoutes from "./delivery-challans.routes";
 import saleReturnsRoutes from "./sale-returns.routes";
 import purchaseReturnsRoutes from "./purchase-returns.routes";
+import reportsRoutes from "./reports.routes";
+import gstReportsRoutes from "./gst-reports.routes";
+import partyStatementRoutes from "./party-statement.routes";
+import cashBankStatementRoutes from "./cash-bank-statement.routes";
 import {
   customerSchema,
   itemSchema,
@@ -38,6 +42,10 @@ router.use("/cash-bank", bankAccountsRoutes);
 router.use("/quotations", quotationsRoutes);
 router.use("/delivery-challans", deliveryChallansRoutes);
 router.use("/sale-returns", saleReturnsRoutes);
+router.use("/reports", reportsRoutes);
+router.use("/reports", gstReportsRoutes);
+router.use("/party-statement", partyStatementRoutes);
+router.use("/cash-bank", cashBankStatementRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */
@@ -340,31 +348,46 @@ router.delete(
 );
 
 router.post(
-  '/items/:id/adjust-stock',
+  "/items/:id/adjust-stock",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
-    const {
-      quantity,
-      reason,
-      notes,
-    } = req.body;
+    const bodySchema = z.object({
+      quantity: z.coerce
+        .number()
+        .finite()
+        .refine(
+          (value) => value !== 0,
+          "Adjustment quantity cannot be zero",
+        ),
+      reason: z.string().trim().min(1).max(255),
+      notes: z.string().trim().max(5000).optional().nullable(),
+    });
+
+    const parsed = bodySchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
 
     const data = await itemsService.adjustStock(
       req.businessId!,
       id,
-      quantity,
-      reason,
-      notes,
-      req.user?.userId
+      parsed.data.quantity,
+      parsed.data.reason,
+      parsed.data.notes ?? undefined,
+      req.user?.userId,
     );
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 /* =========================================================
