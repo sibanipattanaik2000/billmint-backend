@@ -1,4 +1,3 @@
-
 import { Prisma } from "@prisma/client";
 import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
@@ -121,17 +120,11 @@ export async function updateOtherIncome(
     throw new AppError("Provide at least one field to update", 400);
   }
 
-  if (
-    input.category != null &&
-    input.category.trim().length > 200
-  ) {
+  if (input.category != null && input.category.trim().length > 200) {
     throw new AppError("Category cannot exceed 200 characters", 400);
   }
 
-  if (
-    input.description != null &&
-    input.description.trim().length > 1000
-  ) {
+  if (input.description != null && input.description.trim().length > 1000) {
     throw new AppError("Description cannot exceed 1000 characters", 400);
   }
 
@@ -144,6 +137,12 @@ export async function updateOtherIncome(
   ) {
     throw new AppError("Payment method must contain 1–50 characters", 400);
   }
+  if (
+  input.reference != null &&
+  input.reference.trim().length > 200
+) {
+  throw new AppError("Reference cannot exceed 200 characters", 400);
+}
 
   return prisma.$transaction(
     async (tx) => {
@@ -161,9 +160,7 @@ export async function updateOtherIncome(
           : parseAmount(input.amount);
 
       const date =
-        input.date === undefined
-          ? existing.date
-          : parseDate(input.date);
+        input.date === undefined ? existing.date : parseDate(input.date);
 
       const bankAccountId =
         input.bankAccountId === undefined
@@ -211,8 +208,9 @@ export async function updateOtherIncome(
           ...(input.description !== undefined
             ? { description: clean(input.description) }
             : {}),
-          ...(input.notes !== undefined
-            ? { notes: clean(input.notes) }
+          ...(input.notes !== undefined ? { notes: clean(input.notes) } : {}),
+          ...(input.reference !== undefined
+            ? { reference: clean(input.reference) }
             : {}),
         },
         include: {
@@ -228,10 +226,7 @@ export async function updateOtherIncome(
   );
 }
 
-export async function deleteOtherIncome(
-  businessId: string,
-  incomeId: string,
-) {
+export async function deleteOtherIncome(businessId: string, incomeId: string) {
   return prisma.$transaction(
     async (tx) => {
       const existing = await tx.otherIncome.findFirst({

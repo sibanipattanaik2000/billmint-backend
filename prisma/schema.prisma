@@ -887,10 +887,13 @@ model OtherIncome {
   bankAccountId String?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
+
   bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id])
   business      Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@index([businessId])
+  @@index([businessId, deletedAt])
   @@index([date])
   @@map("other_incomes")
 }

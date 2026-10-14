@@ -4,7 +4,7 @@ import { z } from "zod";
 import { authenticate, type AuthRequest } from "../middleware/auth";
 import { asyncHandler, AppError } from "../middleware/errorHandler";
 import * as otherIncomeService from "../services/other-income.service";
-
+import * as otherIncomeMutationsService from "../services/other-income-mutations.service";
 const router = Router();
 
 const createOtherIncomeSchema = z.object({
@@ -81,5 +81,46 @@ router.post(
     });
   }),
 );
+/**
+ * PATCH /other-income/:id
+ * Update an income record and reconcile its cash/bank balance.
+ */
+router.patch(
+  "/:id",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const input = createOtherIncomeSchema.partial().parse(req.body);
 
+    const data = await otherIncomeMutationsService.updateOtherIncome(
+      req.businessId!,
+      String(req.params.id),
+      input,
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  }),
+);
+
+/**
+ * DELETE /other-income/:id
+ * Delete an income record and reverse its cash/bank impact.
+ */
+router.delete(
+  "/:id",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await otherIncomeMutationsService.deleteOtherIncome(
+      req.businessId!,
+      String(req.params.id),
+    );
+
+    return res.status(200).json({
+      success: true,
+      data,
+    });
+  }),
+);
 export default router;

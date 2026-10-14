@@ -241,6 +241,7 @@ export async function createOtherIncome(
           paymentMethod,
           description,
           notes,
+          reference,
           bankAccountId: updatedAccount?.id ?? null,
         },
         include: {
