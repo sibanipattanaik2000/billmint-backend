@@ -1,7 +1,7 @@
+
 import { Prisma } from "@prisma/client";
 import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
-import { calculateInvoiceTotals } from "../utils/money";
 
 type TransactionClient = Prisma.TransactionClient;
 
@@ -104,23 +104,15 @@ async function getNextBillNumber(
   }
 
   const sequence = rows[0];
-
   const number = Number(sequence.nextNumber);
 
   if (!Number.isInteger(number) || number < 1) {
-    throw new AppError(
-      "Invalid purchase invoice sequence",
-      500,
-    );
+    throw new AppError("Invalid purchase invoice sequence", 500);
   }
 
   await tx.invoiceSequence.update({
-    where: {
-      id: sequence.id,
-    },
-    data: {
-      nextNumber: number + 1,
-    },
+    where: { id: sequence.id },
+    data: { nextNumber: number + 1 },
   });
 
   return `${sequence.prefix}${String(number).padStart(4, "0")}`;
@@ -143,10 +135,7 @@ async function validateSupplier(
   });
 
   if (!supplier) {
-    throw new AppError(
-      "Supplier not found or inactive",
-      404,
-    );
+    throw new AppError("Supplier not found or inactive", 404);
   }
 
   return supplier;
@@ -159,10 +148,7 @@ async function calculateLines(
   tx: TransactionClient,
 ): Promise<CalculatedLine[]> {
   if (!Array.isArray(items) || items.length === 0) {
-    throw new AppError(
-      "At least one purchase item is required",
-      400,
-    );
+    throw new AppError("At least one purchase item is required", 400);
   }
 
   if (items.length > 100) {
@@ -184,9 +170,7 @@ async function calculateLines(
     itemIds.length > 0
       ? await tx.item.findMany({
           where: {
-            id: {
-              in: itemIds,
-            },
+            id: { in: itemIds },
             businessId,
             deletedAt: null,
             status: "ACTIVE",
@@ -205,20 +189,13 @@ async function calculateLines(
         })
       : [];
 
-  const itemMap = new Map(
-    dbItems.map((item) => [item.id, item]),
-  );
-
+  const itemMap = new Map(dbItems.map((item) => [item.id, item]));
   const lines: CalculatedLine[] = [];
 
   for (let index = 0; index < items.length; index++) {
     const input = items[index];
-
     const itemId = cleanString(input.itemId);
-
-    const dbItem = itemId
-      ? itemMap.get(itemId)
-      : undefined;
+    const dbItem = itemId ? itemMap.get(itemId) : undefined;
 
     if (itemId && !dbItem) {
       throw new AppError(
@@ -228,9 +205,7 @@ async function calculateLines(
     }
 
     const itemName =
-      cleanString(input.itemName) ||
-      dbItem?.name ||
-      null;
+      cleanString(input.itemName) || dbItem?.name || null;
 
     if (!itemName) {
       throw new AppError(
@@ -244,10 +219,7 @@ async function calculateLines(
       `Quantity for ${itemName}`,
     );
 
-    const rate = nonNegativeNumber(
-      input.rate,
-      `Rate for ${itemName}`,
-    );
+    const rate = nonNegativeNumber(input.rate, `Rate for ${itemName}`);
 
     const discountPercent = nonNegativeNumber(
       input.discountPercent ?? 0,
@@ -262,12 +234,8 @@ async function calculateLines(
     }
 
     const gstRate =
-      input.gstRate !== undefined &&
-      input.gstRate !== null
-        ? nonNegativeNumber(
-            input.gstRate,
-            `GST rate for ${itemName}`,
-          )
+      input.gstRate !== undefined && input.gstRate !== null
+        ? nonNegativeNumber(input.gstRate, `GST rate for ${itemName}`)
         : Number(dbItem?.gstRate ?? 0);
 
     if (gstRate > 100) {
@@ -278,42 +246,21 @@ async function calculateLines(
     }
 
     const grossAmount = quantity * rate;
+    const discountAmount = grossAmount * (discountPercent / 100);
+    const taxableAmount = grossAmount - discountAmount;
+    const gstAmount = taxableAmount * (gstRate / 100);
 
-    const discountAmount =
-      grossAmount * (discountPercent / 100);
-
-    const taxableAmount =
-      grossAmount - discountAmount;
-
-    const gstAmount =
-      taxableAmount * (gstRate / 100);
-
-    const cgstAmount = isInterState
-      ? 0
-      : gstAmount / 2;
-
-    const sgstAmount = isInterState
-      ? 0
-      : gstAmount / 2;
-
-    const igstAmount = isInterState
-      ? gstAmount
-      : 0;
-
+    const cgstAmount = isInterState ? 0 : gstAmount / 2;
+    const sgstAmount = isInterState ? 0 : gstAmount / 2;
+    const igstAmount = isInterState ? gstAmount : 0;
     const amount = taxableAmount + gstAmount;
 
     lines.push({
       itemId,
       itemName,
-      hsnSac:
-        cleanString(input.hsnSac) ??
-        dbItem?.hsnSac ??
-        null,
+      hsnSac: cleanString(input.hsnSac) ?? dbItem?.hsnSac ?? null,
       quantity,
-      unit:
-        cleanString(input.unit) ??
-        dbItem?.unit?.shortName ??
-        null,
+      unit: cleanString(input.unit) ?? dbItem?.unit?.shortName ?? null,
       rate,
       discountPercent,
       discountAmount,
@@ -333,29 +280,15 @@ export async function createPurchase(
   businessId: string,
   input: CreatePurchaseInput,
 ) {
-  const billNumber = cleanString(input.billNumber);
+  const requestedBillNumber = cleanString(input.billNumber);
 
-  if (!billNumber) {
-    throw new AppError(
-      "Bill number is required",
-      400,
-    );
+  if (requestedBillNumber && requestedBillNumber.length > 100) {
+    throw new AppError("Bill number cannot exceed 100 characters", 400);
   }
 
-  if (billNumber.length > 100) {
-    throw new AppError(
-      "Bill number cannot exceed 100 characters",
-      400,
-    );
-  }
-
-  const paymentMethod =
-    cleanString(input.paymentMethod);
-
+  const paymentMethod = cleanString(input.paymentMethod);
   const notes = cleanString(input.notes);
-
-  const placeOfSupply =
-    cleanString(input.placeOfSupply);
+  const placeOfSupply = cleanString(input.placeOfSupply);
 
   const requestedPaidAmount = nonNegativeNumber(
     input.paidAmount ?? 0,
@@ -363,37 +296,37 @@ export async function createPurchase(
   );
 
   const purchaseDate =
-    input.date instanceof Date &&
-    !Number.isNaN(input.date.getTime())
+    input.date instanceof Date && !Number.isNaN(input.date.getTime())
       ? input.date
       : new Date();
 
   const dueDate =
-    input.dueDate instanceof Date &&
-    !Number.isNaN(input.dueDate.getTime())
+    input.dueDate instanceof Date && !Number.isNaN(input.dueDate.getTime())
       ? input.dueDate
       : null;
 
   if (dueDate && dueDate < purchaseDate) {
-    throw new AppError(
-      "Due date cannot be before purchase date",
-      400,
-    );
+    throw new AppError("Due date cannot be before purchase date", 400);
   }
 
   return prisma.$transaction(
     async (tx) => {
-      const existingBill =
-        await tx.purchase.findFirst({
-          where: {
-            businessId,
-            billNumber,
-            deletedAt: null,
-          },
-          select: {
-            id: true,
-          },
-        });
+      // All database operations for this purchase stay in one transaction.
+      // A generated sequence increment rolls back if purchase creation fails.
+      const billNumber =
+        requestedBillNumber ??
+        (await getNextBillNumber(businessId, tx));
+
+      const existingBill = await tx.purchase.findFirst({
+        where: {
+          businessId,
+          billNumber,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+        },
+      });
 
       if (existingBill) {
         throw new AppError(
@@ -408,30 +341,21 @@ export async function createPurchase(
         tx,
       );
 
-      const business =
-        await tx.business.findUnique({
-          where: {
-            id: businessId,
-          },
-          select: {
-            state: true,
-          },
-        });
+      const business = await tx.business.findUnique({
+        where: { id: businessId },
+        select: { state: true },
+      });
 
       if (!business) {
-        throw new AppError(
-          "Business not found",
-          404,
-        );
+        throw new AppError("Business not found", 404);
       }
 
-      const isInterState =
-        Boolean(
-          supplier?.state &&
-            business.state &&
-            supplier.state.trim().toLowerCase() !==
-              business.state.trim().toLowerCase(),
-        );
+      const isInterState = Boolean(
+        supplier?.state &&
+          business.state &&
+          supplier.state.trim().toLowerCase() !==
+            business.state.trim().toLowerCase(),
+      );
 
       const lines = await calculateLines(
         businessId,
@@ -441,56 +365,42 @@ export async function createPurchase(
       );
 
       const subtotal = lines.reduce(
-        (sum, line) =>
-          sum + line.quantity * line.rate,
+        (sum, line) => sum + line.quantity * line.rate,
         0,
       );
 
       const discountAmount = lines.reduce(
-        (sum, line) =>
-          sum + line.discountAmount,
+        (sum, line) => sum + line.discountAmount,
         0,
       );
 
       const taxableAmount = lines.reduce(
-        (sum, line) =>
-          sum + line.taxableAmount,
+        (sum, line) => sum + line.taxableAmount,
         0,
       );
 
       const cgstAmount = lines.reduce(
-        (sum, line) =>
-          sum + line.cgstAmount,
+        (sum, line) => sum + line.cgstAmount,
         0,
       );
 
       const sgstAmount = lines.reduce(
-        (sum, line) =>
-          sum + line.sgstAmount,
+        (sum, line) => sum + line.sgstAmount,
         0,
       );
 
       const igstAmount = lines.reduce(
-        (sum, line) =>
-          sum + line.igstAmount,
+        (sum, line) => sum + line.igstAmount,
         0,
       );
 
       const totalBeforeRound =
-        taxableAmount +
-        cgstAmount +
-        sgstAmount +
-        igstAmount;
+        taxableAmount + cgstAmount + sgstAmount + igstAmount;
 
-      const grandTotal =
-        Math.round(
-          totalBeforeRound * 100,
-        ) / 100;
+      const grandTotal = Math.round(totalBeforeRound * 100) / 100;
 
       const roundOff =
-        Math.round(
-          (grandTotal - totalBeforeRound) * 100,
-        ) / 100;
+        Math.round((grandTotal - totalBeforeRound) * 100) / 100;
 
       if (requestedPaidAmount > grandTotal) {
         throw new AppError(
@@ -500,22 +410,13 @@ export async function createPurchase(
       }
 
       const balanceAmount =
-        Math.round(
-          (grandTotal - requestedPaidAmount) *
-            100,
-        ) / 100;
+        Math.round((grandTotal - requestedPaidAmount) * 100) / 100;
 
-      let status:
-        | "DRAFT"
-        | "UNPAID"
-        | "PARTIALLY_PAID"
-        | "PAID";
+      let status: "DRAFT" | "UNPAID" | "PARTIALLY_PAID" | "PAID";
 
       if (input.status === "DRAFT") {
         status = "DRAFT";
-      } else if (grandTotal === 0) {
-        status = "PAID";
-      } else if (balanceAmount <= 0) {
+      } else if (grandTotal === 0 || balanceAmount <= 0) {
         status = "PAID";
       } else if (requestedPaidAmount > 0) {
         status = "PARTIALLY_PAID";
@@ -523,100 +424,71 @@ export async function createPurchase(
         status = "UNPAID";
       }
 
-      const generatedBillNumber =
-        await getNextBillNumber(
+      const purchase = await tx.purchase.create({
+        data: {
           businessId,
-          tx,
-        );
-
-      const purchase =
-        await tx.purchase.create({
-          data: {
-            businessId,
-            billNumber:
-              billNumber || generatedBillNumber,
-            supplierId:
-              supplier?.id ?? null,
-            date: purchaseDate,
-            dueDate,
-            status,
-            placeOfSupply,
-            isInterState,
-            subtotal,
-            discountAmount,
-            taxableAmount,
-            cgstAmount,
-            sgstAmount,
-            igstAmount,
-            cessAmount: 0,
-            roundOff,
-            grandTotal,
-            paidAmount:
-              status === "DRAFT"
-                ? 0
-                : requestedPaidAmount,
-            balanceAmount:
-              status === "DRAFT"
-                ? grandTotal
-                : balanceAmount,
-            paymentMethod,
-            notes,
-            createdById:
-              input.createdById ?? null,
-
-            items: {
-              create: lines.map((line) => ({
-                itemId: line.itemId,
-                itemName: line.itemName,
-                hsnSac: line.hsnSac,
-                quantity: line.quantity,
-                unit: line.unit,
-                rate: line.rate,
-                discountPercent:
-                  line.discountPercent,
-                discountAmount:
-                  line.discountAmount,
-                taxableAmount:
-                  line.taxableAmount,
-                gstRate: line.gstRate,
-                cgstAmount:
-                  line.cgstAmount,
-                sgstAmount:
-                  line.sgstAmount,
-                igstAmount:
-                  line.igstAmount,
-                amount: line.amount,
-              })),
-            },
+          billNumber,
+          supplierId: supplier?.id ?? null,
+          date: purchaseDate,
+          dueDate,
+          status,
+          placeOfSupply,
+          isInterState,
+          subtotal,
+          discountAmount,
+          taxableAmount,
+          cgstAmount,
+          sgstAmount,
+          igstAmount,
+          cessAmount: 0,
+          roundOff,
+          grandTotal,
+          paidAmount: status === "DRAFT" ? 0 : requestedPaidAmount,
+          balanceAmount: status === "DRAFT" ? grandTotal : balanceAmount,
+          paymentMethod,
+          notes,
+          createdById: input.createdById ?? null,
+          items: {
+            create: lines.map((line) => ({
+              itemId: line.itemId,
+              itemName: line.itemName,
+              hsnSac: line.hsnSac,
+              quantity: line.quantity,
+              unit: line.unit,
+              rate: line.rate,
+              discountPercent: line.discountPercent,
+              discountAmount: line.discountAmount,
+              taxableAmount: line.taxableAmount,
+              gstRate: line.gstRate,
+              cgstAmount: line.cgstAmount,
+              sgstAmount: line.sgstAmount,
+              igstAmount: line.igstAmount,
+              amount: line.amount,
+            })),
           },
-          include: {
-            supplier: true,
-            items: true,
-          },
-        });
+        },
+        include: {
+          supplier: true,
+          items: true,
+        },
+      });
 
-      /*
-       * Stock and supplier balances are updated only
-       * for non-draft purchases.
-       */
+      // Draft purchases do not change inventory or supplier balances.
       if (status !== "DRAFT") {
         for (const line of lines) {
           if (!line.itemId) continue;
 
-          const updatedItem =
-            await tx.item.update({
-              where: {
-                id: line.itemId,
+          const updatedItem = await tx.item.update({
+            where: { id: line.itemId },
+            data: {
+              currentStock: {
+                increment: line.quantity,
               },
-              data: {
-                currentStock: {
-                  increment: line.quantity,
-                },
-              },
-              select: {
-                currentStock: true,
-              },
-            });
+            },
+            select: {
+              currentStock: true,
+            },
+          });
 
           await tx.stockMovement.create({
             data: {
@@ -626,8 +498,7 @@ export async function createPurchase(
               type: "PURCHASE",
               quantityIn: line.quantity,
               quantityOut: 0,
-              balance:
-                updatedItem.currentStock,
+              balance: updatedItem.currentStock,
               referenceType: "PURCHASE",
               referenceId: purchase.id,
               notes: `Purchase ${purchase.billNumber}`,
@@ -637,9 +508,7 @@ export async function createPurchase(
 
         if (supplier && balanceAmount > 0) {
           await tx.supplier.update({
-            where: {
-              id: supplier.id,
-            },
+            where: { id: supplier.id },
             data: {
               currentBalance: {
                 increment: balanceAmount,
@@ -648,24 +517,18 @@ export async function createPurchase(
           });
         }
 
-        if (
-          requestedPaidAmount > 0 &&
-          supplier
-        ) {
-          const payment =
-            await tx.paymentOut.create({
-              data: {
-                businessId,
-                supplierId: supplier.id,
-                amount: requestedPaidAmount,
-                date: purchaseDate,
-                paymentMethod:
-                  paymentMethod || "cash",
-                createdById:
-                  input.createdById ?? null,
-                notes: `Payment for purchase ${purchase.billNumber}`,
-              },
-            });
+        if (requestedPaidAmount > 0 && supplier) {
+          const payment = await tx.paymentOut.create({
+            data: {
+              businessId,
+              supplierId: supplier.id,
+              amount: requestedPaidAmount,
+              date: purchaseDate,
+              paymentMethod: paymentMethod || "cash",
+              createdById: input.createdById ?? null,
+              notes: `Payment for purchase ${purchase.billNumber}`,
+            },
+          });
 
           await tx.paymentOutAllocation.create({
             data: {
@@ -680,8 +543,7 @@ export async function createPurchase(
       await tx.auditLog.create({
         data: {
           businessId,
-          userId:
-            input.createdById ?? null,
+          userId: input.createdById ?? null,
           action: "CREATE",
           module: "purchases",
           recordId: purchase.id,
@@ -692,8 +554,7 @@ export async function createPurchase(
       return purchase;
     },
     {
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
   );
 }
@@ -709,19 +570,8 @@ export async function getPurchases(
     to?: Date;
   } = {},
 ) {
-  const page = Math.max(
-    1,
-    Number(opts.page) || 1,
-  );
-
-  const limit = Math.min(
-    100,
-    Math.max(
-      1,
-      Number(opts.limit) || 20,
-    ),
-  );
-
+  const page = Math.max(1, Number(opts.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(opts.limit) || 20));
   const skip = (page - 1) * limit;
 
   const where: Prisma.PurchaseWhereInput = {
@@ -735,18 +585,13 @@ export async function getPurchases(
 
   if (opts.from || opts.to) {
     where.date = {
-      ...(opts.from
-        ? { gte: opts.from }
-        : {}),
-      ...(opts.to
-        ? { lte: opts.to }
-        : {}),
+      ...(opts.from ? { gte: opts.from } : {}),
+      ...(opts.to ? { lte: opts.to } : {}),
     };
   }
 
   if (opts.search?.trim()) {
-    const search =
-      opts.search.trim();
+    const search = opts.search.trim();
 
     where.OR = [
       {
@@ -774,37 +619,26 @@ export async function getPurchases(
     ];
   }
 
-  const [data, total] =
-    await Promise.all([
-      prisma.purchase.findMany({
-        where,
-        include: {
-          supplier: {
-            select: {
-              id: true,
-              name: true,
-              businessName: true,
-              phone: true,
-            },
+  const [data, total] = await Promise.all([
+    prisma.purchase.findMany({
+      where,
+      include: {
+        supplier: {
+          select: {
+            id: true,
+            name: true,
+            businessName: true,
+            phone: true,
           },
-          items: true,
         },
-        orderBy: [
-          {
-            date: "desc",
-          },
-          {
-            id: "desc",
-          },
-        ],
-        skip,
-        take: limit,
-      }),
-
-      prisma.purchase.count({
-        where,
-      }),
-    ]);
+        items: true,
+      },
+      orderBy: [{ date: "desc" }, { id: "desc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.purchase.count({ where }),
+  ]);
 
   return {
     data,
@@ -812,8 +646,7 @@ export async function getPurchases(
       page,
       limit,
       total,
-      totalPages:
-        Math.ceil(total / limit),
+      totalPages: Math.ceil(total / limit),
     },
   };
 }
@@ -822,33 +655,29 @@ export async function getPurchaseById(
   businessId: string,
   id: string,
 ) {
-  const purchase =
-    await prisma.purchase.findFirst({
-      where: {
-        id,
-        businessId,
-        deletedAt: null,
-      },
-      include: {
-        supplier: true,
-        items: {
-          include: {
-            item: true,
-          },
-        },
-        payments: {
-          include: {
-            paymentOut: true,
-          },
+  const purchase = await prisma.purchase.findFirst({
+    where: {
+      id,
+      businessId,
+      deletedAt: null,
+    },
+    include: {
+      supplier: true,
+      items: {
+        include: {
+          item: true,
         },
       },
-    });
+      payments: {
+        include: {
+          paymentOut: true,
+        },
+      },
+    },
+  });
 
   if (!purchase) {
-    throw new AppError(
-      "Purchase not found",
-      404,
-    );
+    throw new AppError("Purchase not found", 404);
   }
 
   return purchase;
@@ -861,65 +690,47 @@ export async function cancelPurchase(
 ) {
   return prisma.$transaction(
     async (tx) => {
-      const purchase =
-        await tx.purchase.findFirst({
-          where: {
-            id,
-            businessId,
-            deletedAt: null,
-          },
-          include: {
-            items: true,
-          },
-        });
+      const purchase = await tx.purchase.findFirst({
+        where: {
+          id,
+          businessId,
+          deletedAt: null,
+        },
+        include: {
+          items: true,
+        },
+      });
 
       if (!purchase) {
-        throw new AppError(
-          "Purchase not found",
-          404,
-        );
+        throw new AppError("Purchase not found", 404);
       }
 
       if (purchase.status === "CANCELLED") {
-        throw new AppError(
-          "Purchase is already cancelled",
-          409,
-        );
+        throw new AppError("Purchase is already cancelled", 409);
       }
 
       if (purchase.status === "DRAFT") {
         await tx.purchase.update({
-          where: {
-            id: purchase.id,
-          },
-          data: {
-            status: "CANCELLED",
-          },
+          where: { id: purchase.id },
+          data: { status: "CANCELLED" },
         });
       } else {
         for (const line of purchase.items) {
           if (!line.itemId) continue;
 
-          const updatedItem =
-            await tx.item.update({
-              where: {
-                id: line.itemId,
+          const updatedItem = await tx.item.update({
+            where: { id: line.itemId },
+            data: {
+              currentStock: {
+                decrement: line.quantity,
               },
-              data: {
-                currentStock: {
-                  decrement:
-                    line.quantity,
-                },
-              },
-              select: {
-                currentStock: true,
-              },
-            });
+            },
+            select: {
+              currentStock: true,
+            },
+          });
 
-          if (
-            Number(updatedItem.currentStock) <
-            0
-          ) {
+          if (Number(updatedItem.currentStock) < 0) {
             throw new AppError(
               `Cannot cancel purchase because stock for ${line.itemName} would become negative`,
               409,
@@ -933,14 +744,10 @@ export async function cancelPurchase(
               date: new Date(),
               type: "PURCHASE_RETURN",
               quantityIn: 0,
-              quantityOut:
-                line.quantity,
-              balance:
-                updatedItem.currentStock,
-              referenceType:
-                "PURCHASE_CANCEL",
-              referenceId:
-                purchase.id,
+              quantityOut: line.quantity,
+              balance: updatedItem.currentStock,
+              referenceType: "PURCHASE_CANCEL",
+              referenceId: purchase.id,
               notes: `Cancelled purchase ${purchase.billNumber}`,
             },
           });
@@ -951,25 +758,18 @@ export async function cancelPurchase(
           Number(purchase.balanceAmount) > 0
         ) {
           await tx.supplier.update({
-            where: {
-              id: purchase.supplierId,
-            },
+            where: { id: purchase.supplierId },
             data: {
               currentBalance: {
-                decrement:
-                  purchase.balanceAmount,
+                decrement: purchase.balanceAmount,
               },
             },
           });
         }
 
         await tx.purchase.update({
-          where: {
-            id: purchase.id,
-          },
-          data: {
-            status: "CANCELLED",
-          },
+          where: { id: purchase.id },
+          data: { status: "CANCELLED" },
         });
       }
 
@@ -980,19 +780,16 @@ export async function cancelPurchase(
           action: "CANCEL",
           module: "purchases",
           recordId: purchase.id,
-          recordName:
-            purchase.billNumber,
+          recordName: purchase.billNumber,
         },
       });
 
       return {
-        message:
-          "Purchase cancelled successfully",
+        message: "Purchase cancelled successfully",
       };
     },
     {
-      isolationLevel:
-        Prisma.TransactionIsolationLevel.Serializable,
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
   );
 }

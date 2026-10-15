@@ -1,8 +1,11 @@
 
-import { Router, Response } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 
-import { authenticate, AuthRequest } from "../middleware/auth";
+import {
+  authenticate,
+  type AuthRequest,
+} from "../middleware/auth";
 import { asyncHandler } from "../middleware/errorHandler";
 import * as purchasesService from "../services/purchases.service";
 import {
@@ -12,18 +15,18 @@ import {
 
 const router = Router();
 
-/**
- * Keep purchase validation local to this router.
- * The existing shared purchase schema does not include billNumber,
- * which is required by purchases.service.ts.
- */
 const createPurchaseSchema = purchaseSchema.extend({
-  billNumber: z.string().trim().min(1, "Bill number is required").max(100),
+  billNumber: z
+    .string()
+    .trim()
+    .max(100, "Bill number cannot exceed 100 characters")
+    .optional()
+    .or(z.literal("")),
 });
 
 /**
  * GET /purchases
- * List purchases belonging to the authenticated business.
+ * List purchases for the authenticated business.
  */
 router.get(
   "/",
@@ -67,7 +70,7 @@ router.get(
       });
     }
 
-    const data = await purchasesService.getPurchases(
+    const result = await purchasesService.getPurchases(
       req.businessId!,
       {
         page: query.page,
@@ -79,17 +82,16 @@ router.get(
       },
     );
 
-    return res.json({
+    return res.status(200).json({
       success: true,
-      ...data,
+      ...result,
     });
   }),
 );
 
 /**
  * POST /purchases
- * Create a purchase and let the existing service handle
- * database transactions, totals, stock, and accounting updates.
+ * Create a purchase with server-side validation and transaction handling.
  */
 router.post(
   "/",
@@ -119,14 +121,12 @@ router.get(
   "/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const id = String(req.params.id);
-
     const data = await purchasesService.getPurchaseById(
       req.businessId!,
-      id,
+      String(req.params.id),
     );
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       data,
     });
@@ -140,15 +140,13 @@ router.post(
   "/:id/cancel",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const id = String(req.params.id);
-
     const data = await purchasesService.cancelPurchase(
       req.businessId!,
-      id,
+      String(req.params.id),
       req.user?.userId,
     );
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       data,
     });
