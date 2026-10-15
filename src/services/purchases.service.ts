@@ -18,7 +18,7 @@ export interface PurchaseItemInput {
 
 export interface CreatePurchaseInput {
   supplierId?: string | null;
-  billNumber: string;
+  billNumber?: string;
   date?: Date;
   dueDate?: Date | null;
   placeOfSupply?: string | null;
