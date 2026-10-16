@@ -21,6 +21,7 @@ import reportsRoutes from "./reports.routes";
 import gstReportsRoutes from "./gst-reports.routes";
 import partyStatementRoutes from "./party-statement.routes";
 import cashBankStatementRoutes from "./cash-bank-statement.routes";
+import businessSettingsRoutes from './business-settings.routes';
 import {
   customerSchema,
   itemSchema,
@@ -46,6 +47,7 @@ router.use("/reports", reportsRoutes);
 router.use("/reports", gstReportsRoutes);
 router.use("/party-statement", partyStatementRoutes);
 router.use("/cash-bank", cashBankStatementRoutes);
+router.use('/business-settings', businessSettingsRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */

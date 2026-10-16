@@ -98,12 +98,13 @@ export async function createPurchaseReturn(
       if (purchaseId && !purchase) {
         throw new AppError("Original purchase not found", 404);
       }
-
-      if (
-        purchase &&
-        supplierId &&
-        purchase.supplierId !== supplierId
-      ) {
+      if (purchase && ["DRAFT", "CANCELLED"].includes(purchase.status)) {
+        throw new AppError(
+          "Cannot return items against a draft or cancelled purchase",
+          400,
+        );
+      }
+      if (purchase && supplierId && purchase.supplierId !== supplierId) {
         throw new AppError(
           "Supplier does not match the original purchase",
           400,
@@ -315,6 +316,29 @@ export async function createPurchaseReturn(
         include: { items: true },
       });
 
+      if (purchase) {
+        const outstanding = Math.max(0, Number(purchase.balanceAmount));
+        const returnValue = Number(grandTotal);
+        const remainingBalance = Math.max(0, outstanding - returnValue);
+        const paidAmount = Number(purchase.paidAmount);
+
+        const nextStatus =
+          remainingBalance <= 0
+            ? "PAID"
+            : paidAmount > 0
+              ? "PARTIALLY_PAID"
+              : "UNPAID";
+
+        await tx.purchase.update({
+          where: {
+            id: purchase.id,
+          },
+          data: {
+            balanceAmount: toDecimal(Math.round(remainingBalance * 100) / 100),
+            status: nextStatus,
+          },
+        });
+      }
       for (const [itemId, quantity] of requestedByItem) {
         const item = itemMap.get(itemId)!;
 
@@ -426,10 +450,7 @@ export async function listPurchaseReturns(
   };
 }
 
-export async function getPurchaseReturnById(
-  businessId: string,
-  id: string,
-) {
+export async function getPurchaseReturnById(businessId: string, id: string) {
   const result = await prisma.purchaseReturn.findFirst({
     where: { id, businessId },
     include: {
