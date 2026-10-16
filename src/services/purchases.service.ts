@@ -14,6 +14,8 @@ export interface PurchaseItemInput {
   rate: number;
   discountPercent?: number;
   gstRate?: number;
+  serialNumbers?: string[];
+  imeis?: string[];
 }
 
 export interface CreatePurchaseInput {
@@ -45,6 +47,9 @@ interface CalculatedLine {
   sgstAmount: number;
   igstAmount: number;
   amount: number;
+  trackSerial: boolean;
+  serialNumbers: string[];
+  imeis: string[];
 }
 
 function cleanString(value: unknown): string | null {
@@ -72,6 +77,42 @@ function nonNegativeNumber(value: unknown, field: string): number {
   }
 
   return number;
+}
+
+function normalizeIdentifiers(
+  values: string[] | undefined,
+  field: string,
+  itemName: string,
+): string[] {
+  if (values === undefined) return [];
+
+  if (!Array.isArray(values)) {
+    throw new AppError(`${field} for ${itemName} must be an array`, 400);
+  }
+
+  const normalized = values.map((value) => {
+    if (typeof value !== "string" || !value.trim()) {
+      throw new AppError(
+        `${field} for ${itemName} cannot contain empty values`,
+        400,
+      );
+    }
+
+    return value.trim();
+  });
+
+  const normalizedKeys = normalized.map((value) =>
+    field === "Serial numbers" ? value.toLowerCase() : value,
+  );
+
+  if (new Set(normalizedKeys).size !== normalizedKeys.length) {
+    throw new AppError(
+      `Duplicate ${field.toLowerCase()} found for ${itemName}`,
+      400,
+    );
+  }
+
+  return normalized;
 }
 
 async function getNextBillNumber(
@@ -152,10 +193,7 @@ async function calculateLines(
   }
 
   if (items.length > 100) {
-    throw new AppError(
-      "A purchase cannot contain more than 100 items",
-      400,
-    );
+    throw new AppError("A purchase cannot contain more than 100 items", 400);
   }
 
   const itemIds = [
@@ -179,6 +217,7 @@ async function calculateLines(
             id: true,
             name: true,
             hsnSac: true,
+            trackSerial: true,
             unit: {
               select: {
                 shortName: true,
@@ -191,6 +230,8 @@ async function calculateLines(
 
   const itemMap = new Map(dbItems.map((item) => [item.id, item]));
   const lines: CalculatedLine[] = [];
+  const seenSerialNumbers = new Set<string>();
+  const seenImeis = new Set<string>();
 
   for (let index = 0; index < items.length; index++) {
     const input = items[index];
@@ -204,14 +245,10 @@ async function calculateLines(
       );
     }
 
-    const itemName =
-      cleanString(input.itemName) || dbItem?.name || null;
+    const itemName = cleanString(input.itemName) || dbItem?.name || null;
 
     if (!itemName) {
-      throw new AppError(
-        `Item name is required at position ${index + 1}`,
-        400,
-      );
+      throw new AppError(`Item name is required at position ${index + 1}`, 400);
     }
 
     const quantity = positiveNumber(
@@ -227,10 +264,7 @@ async function calculateLines(
     );
 
     if (discountPercent > 100) {
-      throw new AppError(
-        `Discount for ${itemName} cannot exceed 100%`,
-        400,
-      );
+      throw new AppError(`Discount for ${itemName} cannot exceed 100%`, 400);
     }
 
     const gstRate =
@@ -239,10 +273,85 @@ async function calculateLines(
         : Number(dbItem?.gstRate ?? 0);
 
     if (gstRate > 100) {
+      throw new AppError(`GST rate for ${itemName} cannot exceed 100%`, 400);
+    }
+
+    const trackSerial = Boolean(dbItem?.trackSerial);
+
+    const serialNumbers = normalizeIdentifiers(
+      input.serialNumbers,
+      "Serial numbers",
+      itemName,
+    );
+
+    const imeis = normalizeIdentifiers(input.imeis, "IMEIs", itemName);
+
+    if (!trackSerial && (serialNumbers.length > 0 || imeis.length > 0)) {
       throw new AppError(
-        `GST rate for ${itemName} cannot exceed 100%`,
+        `${itemName} is not configured for serial-number tracking`,
         400,
       );
+    }
+
+    if (trackSerial) {
+      if (!itemId) {
+        throw new AppError(
+          `${itemName} must be linked to a catalog item for serial tracking`,
+          400,
+        );
+      }
+
+      if (!Number.isInteger(quantity)) {
+        throw new AppError(
+          `Quantity for serial-tracked item ${itemName} must be a whole number`,
+          400,
+        );
+      }
+
+      if (serialNumbers.length === 0 && imeis.length === 0) {
+        throw new AppError(
+          `Enter a serial number or IMEI for every unit of ${itemName}`,
+          400,
+        );
+      }
+
+      if (
+        (serialNumbers.length > 0 && serialNumbers.length !== quantity) ||
+        (imeis.length > 0 && imeis.length !== quantity)
+      ) {
+        throw new AppError(
+          `The number of serial numbers and IMEIs for ${itemName} must match its quantity`,
+          400,
+        );
+      }
+
+      for (const imei of imeis) {
+        if (!/^\d{15}$/.test(imei)) {
+          throw new AppError(
+            `Every IMEI for ${itemName} must contain exactly 15 digits`,
+            400,
+          );
+        }
+
+        if (seenImeis.has(imei)) {
+          throw new AppError(`Duplicate IMEI found: ${imei}`, 409);
+        }
+
+        seenImeis.add(imei);
+      }
+
+      for (const serialNumber of serialNumbers) {
+        const serialKey = serialNumber.toLowerCase();
+
+        if (seenSerialNumbers.has(serialKey)) {
+          throw new AppError(
+            `Duplicate serial number found: ${serialNumber}`,
+            409,
+          );
+        }
+
+        seenSerialNumbers.add(serialKey);
+      }
     }
 
     const grossAmount = quantity * rate;
@@ -270,6 +379,9 @@ async function calculateLines(
       sgstAmount,
       igstAmount,
       amount,
+      trackSerial,
+      serialNumbers,
+      imeis,
     });
   }
 
@@ -311,11 +423,8 @@ export async function createPurchase(
 
   return prisma.$transaction(
     async (tx) => {
-      // All database operations for this purchase stay in one transaction.
-      // A generated sequence increment rolls back if purchase creation fails.
       const billNumber =
-        requestedBillNumber ??
-        (await getNextBillNumber(businessId, tx));
+        requestedBillNumber ?? (await getNextBillNumber(businessId, tx));
 
       const existingBill = await tx.purchase.findFirst({
         where: {
@@ -323,23 +432,14 @@ export async function createPurchase(
           billNumber,
           deletedAt: null,
         },
-        select: {
-          id: true,
-        },
+        select: { id: true },
       });
 
       if (existingBill) {
-        throw new AppError(
-          `Purchase bill ${billNumber} already exists`,
-          409,
-        );
+        throw new AppError(`Purchase bill ${billNumber} already exists`, 409);
       }
 
-      const supplier = await validateSupplier(
-        businessId,
-        input.supplierId,
-        tx,
-      );
+      const supplier = await validateSupplier(businessId, input.supplierId, tx);
 
       const business = await tx.business.findUnique({
         where: { id: businessId },
@@ -379,34 +479,18 @@ export async function createPurchase(
         0,
       );
 
-      const cgstAmount = lines.reduce(
-        (sum, line) => sum + line.cgstAmount,
-        0,
-      );
-
-      const sgstAmount = lines.reduce(
-        (sum, line) => sum + line.sgstAmount,
-        0,
-      );
-
-      const igstAmount = lines.reduce(
-        (sum, line) => sum + line.igstAmount,
-        0,
-      );
+      const cgstAmount = lines.reduce((sum, line) => sum + line.cgstAmount, 0);
+      const sgstAmount = lines.reduce((sum, line) => sum + line.sgstAmount, 0);
+      const igstAmount = lines.reduce((sum, line) => sum + line.igstAmount, 0);
 
       const totalBeforeRound =
         taxableAmount + cgstAmount + sgstAmount + igstAmount;
 
       const grandTotal = Math.round(totalBeforeRound * 100) / 100;
-
-      const roundOff =
-        Math.round((grandTotal - totalBeforeRound) * 100) / 100;
+      const roundOff = Math.round((grandTotal - totalBeforeRound) * 100) / 100;
 
       if (requestedPaidAmount > grandTotal) {
-        throw new AppError(
-          "Paid amount cannot exceed purchase total",
-          400,
-        );
+        throw new AppError("Paid amount cannot exceed purchase total", 400);
       }
 
       const balanceAmount =
@@ -473,21 +557,28 @@ export async function createPurchase(
         },
       });
 
-      // Draft purchases do not change inventory or supplier balances.
+      // Draft purchases must not affect stock or serialized inventory.
       if (status !== "DRAFT") {
-        for (const line of lines) {
+        for (let index = 0; index < lines.length; index++) {
+          const line = lines[index];
+
           if (!line.itemId) continue;
+
+          const purchaseItem = purchase.items[index];
+
+          if (!purchaseItem || purchaseItem.itemId !== line.itemId) {
+            throw new AppError(
+              "Could not match a purchase item to its inventory record",
+              500,
+            );
+          }
 
           const updatedItem = await tx.item.update({
             where: { id: line.itemId },
             data: {
-              currentStock: {
-                increment: line.quantity,
-              },
+              currentStock: { increment: line.quantity },
             },
-            select: {
-              currentStock: true,
-            },
+            select: { currentStock: true },
           });
 
           await tx.stockMovement.create({
@@ -504,15 +595,52 @@ export async function createPurchase(
               notes: `Purchase ${purchase.billNumber}`,
             },
           });
+
+          if (line.trackSerial) {
+            const unitCount = Math.max(
+              line.serialNumbers.length,
+              line.imeis.length,
+            );
+
+            const inventoryUnits = Array.from(
+              { length: unitCount },
+              (_, unitIndex) => ({
+                businessId,
+                itemId: line.itemId!,
+                serialNumber: line.serialNumbers[unitIndex] ?? null,
+                imei: line.imeis[unitIndex] ?? null,
+                status: "AVAILABLE" as const,
+                purchaseId: purchase.id,
+                purchaseItemId: purchaseItem.id,
+                purchasePrice: line.rate,
+              }),
+            );
+
+            try {
+              await tx.inventoryUnit.createMany({
+                data: inventoryUnits,
+              });
+            } catch (error) {
+              if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === "P2002"
+              ) {
+                throw new AppError(
+                  `A serial number or IMEI for ${line.itemName} already exists in inventory`,
+                  409,
+                );
+              }
+
+              throw error;
+            }
+          }
         }
 
         if (supplier && balanceAmount > 0) {
           await tx.supplier.update({
             where: { id: supplier.id },
             data: {
-              currentBalance: {
-                increment: balanceAmount,
-              },
+              currentBalance: { increment: balanceAmount },
             },
           });
         }
@@ -602,18 +730,12 @@ export async function getPurchases(
       },
       {
         supplier: {
-          name: {
-            contains: search,
-            mode: "insensitive",
-          },
+          name: { contains: search, mode: "insensitive" },
         },
       },
       {
         supplier: {
-          businessName: {
-            contains: search,
-            mode: "insensitive",
-          },
+          businessName: { contains: search, mode: "insensitive" },
         },
       },
     ];
@@ -651,10 +773,7 @@ export async function getPurchases(
   };
 }
 
-export async function getPurchaseById(
-  businessId: string,
-  id: string,
-) {
+export async function getPurchaseById(businessId: string, id: string) {
   const purchase = await prisma.purchase.findFirst({
     where: {
       id,
@@ -666,6 +785,7 @@ export async function getPurchaseById(
       items: {
         include: {
           item: true,
+          inventoryUnits: true,
         },
       },
       payments: {
@@ -673,6 +793,7 @@ export async function getPurchaseById(
           paymentOut: true,
         },
       },
+      inventoryUnits: true,
     },
   });
 
@@ -715,27 +836,85 @@ export async function cancelPurchase(
           data: { status: "CANCELLED" },
         });
       } else {
+        // Validate all units before deleting any of them.
+        const purchasedUnits = await tx.inventoryUnit.findMany({
+          where: {
+            businessId,
+            purchaseId: purchase.id,
+          },
+          select: {
+            id: true,
+            status: true,
+            saleId: true,
+            saleItemId: true,
+          },
+        });
+
+        const unitsNoLongerAvailable = purchasedUnits.filter(
+          (unit) =>
+            unit.status !== "AVAILABLE" ||
+            Boolean(unit.saleId) ||
+            Boolean(unit.saleItemId),
+        );
+
+        if (unitsNoLongerAvailable.length > 0) {
+          throw new AppError(
+            "Cannot cancel this purchase because one or more serialized units have been sold, reserved, returned, damaged, or otherwise changed",
+            409,
+          );
+        }
+
+        if (purchasedUnits.length > 0) {
+          await tx.inventoryUnit.deleteMany({
+            where: {
+              businessId,
+              purchaseId: purchase.id,
+              status: "AVAILABLE",
+              saleId: null,
+              saleItemId: null,
+            },
+          });
+        }
+
         for (const line of purchase.items) {
           if (!line.itemId) continue;
 
-          const updatedItem = await tx.item.update({
-            where: { id: line.itemId },
-            data: {
-              currentStock: {
-                decrement: line.quantity,
-              },
+          const currentItem = await tx.item.findFirst({
+            where: {
+              id: line.itemId,
+              businessId,
+              deletedAt: null,
             },
             select: {
+              id: true,
               currentStock: true,
             },
           });
 
-          if (Number(updatedItem.currentStock) < 0) {
+          if (!currentItem) {
+            throw new AppError(
+              `Cannot cancel purchase because item "${line.itemName}" no longer exists`,
+              409,
+            );
+          }
+
+          const currentStock = Number(currentItem.currentStock);
+          const quantity = Number(line.quantity);
+
+          if (currentStock < quantity) {
             throw new AppError(
               `Cannot cancel purchase because stock for ${line.itemName} would become negative`,
               409,
             );
           }
+
+          const updatedItem = await tx.item.update({
+            where: { id: line.itemId },
+            data: {
+              currentStock: { decrement: line.quantity },
+            },
+            select: { currentStock: true },
+          });
 
           await tx.stockMovement.create({
             data: {
@@ -753,10 +932,7 @@ export async function cancelPurchase(
           });
         }
 
-        if (
-          purchase.supplierId &&
-          Number(purchase.balanceAmount) > 0
-        ) {
+        if (purchase.supplierId && Number(purchase.balanceAmount) > 0) {
           await tx.supplier.update({
             where: { id: purchase.supplierId },
             data: {
@@ -791,5 +967,5 @@ export async function cancelPurchase(
     {
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
-  );
+  )
 }

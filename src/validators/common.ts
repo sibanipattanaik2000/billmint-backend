@@ -288,16 +288,27 @@ export const saleSchema = z.object({
     .optional()
     .or(z.literal("")),
 
-  items: z
-    .array(saleItemSchema)
-    .min(
-      1,
-      "At least one item is required",
-    )
-    .max(
-      100,
-      "A sale cannot contain more than 100 items",
-    ),
+
+items: z
+  .array(
+    saleItemSchema.extend({
+      // One identifier per physical device, when serial tracking is enabled.
+      serialNumbers: z
+        .array(z.string().trim().min(1).max(100))
+        .optional(),
+      imeis: z
+        .array(
+          z
+            .string()
+            .trim()
+            .regex(/^\d{15}$/, "Each IMEI must contain exactly 15 digits"),
+        )
+        .optional(),
+    }),
+  )
+  .min(1, "At least one item is required")
+  .max(100, "A purchase cannot contain more than 100 items"),
+
 
   paymentMethod: z
     .string()
@@ -335,17 +346,47 @@ export const saleSchema = z.object({
     .optional(),
 });
 
+
 export const purchaseSchema = z.object({
   supplierId: z.string().uuid().optional().nullable(),
+
   date: z.coerce.date().optional(),
+
   dueDate: z.coerce.date().optional().nullable(),
-  placeOfSupply: z.string().optional().or(z.literal('')),
-  items: z.array(saleItemSchema).min(1, 'At least one item is required'),
-  paymentMethod: z.string().optional().or(z.literal('')),
-  paidAmount: z.coerce.number().min(0).default(0),
-  notes: z.string().optional().or(z.literal('')),
-  status: z.enum(['DRAFT', 'UNPAID', 'PARTIALLY_PAID', 'PAID']).optional(),
+
+  placeOfSupply: z.string().optional().or(z.literal("")),
+
+  items: z
+    .array(
+      saleItemSchema.extend({
+        serialNumbers: z
+          .array(z.string().trim().min(1, "Serial number cannot be empty"))
+          .optional(),
+
+        imeis: z
+          .array(
+            z
+              .string()
+              .trim()
+              .regex(/^\d{15}$/, "IMEI must contain exactly 15 digits"),
+          )
+          .optional(),
+      }),
+    )
+    .min(1, "At least one item is required")
+    .max(100, "A purchase cannot contain more than 100 items"),
+
+  paymentMethod: z.string().optional().or(z.literal("")),
+
+  paidAmount: z.coerce.number().finite().min(0).default(0),
+
+  notes: z.string().optional().or(z.literal("")),
+
+  status: z
+    .enum(["DRAFT", "UNPAID", "PARTIALLY_PAID", "PAID"])
+    .optional(),
 });
+
 
 export const paymentInSchema = z.object({
   customerId: z.string().uuid().optional().nullable(),
