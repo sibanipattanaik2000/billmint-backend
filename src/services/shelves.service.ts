@@ -15,10 +15,23 @@ const DEFAULT_SHELVES = [
   "R",
 ] as const;
 
+
 function parsePositiveQuantity(value: unknown): Prisma.Decimal {
-  const quantity = new Prisma.Decimal(
-    typeof value === "number" || typeof value === "string" ? value : NaN,
-  );
+  if (
+    (typeof value !== "number" && typeof value !== "string") ||
+    (typeof value === "string" && value.trim() === "") ||
+    (typeof value === "number" && !Number.isFinite(value))
+  ) {
+    throw new AppError("Quantity must be a positive number", 400);
+  }
+
+  let quantity: Prisma.Decimal;
+
+  try {
+    quantity = new Prisma.Decimal(value);
+  } catch {
+    throw new AppError("Quantity must be a valid number", 400);
+  }
 
   if (!quantity.isFinite() || quantity.lte(0)) {
     throw new AppError("Quantity must be a positive number", 400);
@@ -26,6 +39,7 @@ function parsePositiveQuantity(value: unknown): Prisma.Decimal {
 
   return quantity;
 }
+
 
 /**
  * Create any missing default shelves without duplicating existing ones.
@@ -95,6 +109,7 @@ export async function getShelfStock(
  * Place some of an item's existing inventory onto a shelf.
  * This does not increase the item's overall currentStock.
  */
+
 export async function placeStockOnShelf(
   businessId: string,
   shelfId: string,
@@ -104,82 +119,97 @@ export async function placeStockOnShelf(
 ) {
   const quantity = parsePositiveQuantity(rawQuantity);
 
-  return prisma.$transaction(
-    async (tx) => {
-      const shelf = await tx.shelfLocation.findFirst({
-        where: { id: shelfId, businessId, isActive: true },
-        select: { id: true, name: true },
-      });
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        const shelf = await tx.shelfLocation.findFirst({
+          where: { id: shelfId, businessId, isActive: true },
+          select: { id: true, name: true },
+        });
 
-      if (!shelf) {
-        throw new AppError("Active shelf not found", 404);
-      }
+        if (!shelf) {
+          throw new AppError("Active shelf not found", 404);
+        }
 
-      const item = await tx.item.findFirst({
-        where: {
-          id: itemId,
-          businessId,
-          deletedAt: null,
-          status: "ACTIVE",
-        },
-        select: {
-          id: true,
-          name: true,
-          currentStock: true,
-        },
-      });
+        const item = await tx.item.findFirst({
+          where: {
+            id: itemId,
+            businessId,
+            deletedAt: null,
+            status: "ACTIVE",
+          },
+          select: {
+            id: true,
+            name: true,
+            currentStock: true,
+          },
+        });
 
-      if (!item) {
-        throw new AppError("Active item not found", 404);
-      }
+        if (!item) {
+          throw new AppError("Active item not found", 404);
+        }
 
-      const allocated = await tx.shelfStock.aggregate({
-        where: { businessId, itemId },
-        _sum: { quantity: true },
-      });
+        const allocated = await tx.shelfStock.aggregate({
+          where: { businessId, itemId },
+          _sum: { quantity: true },
+        });
 
-      const alreadyAllocated =
-        allocated._sum.quantity ?? new Prisma.Decimal(0);
+        const alreadyAllocated =
+          allocated._sum.quantity ?? new Prisma.Decimal(0);
 
-      if (alreadyAllocated.plus(quantity).gt(item.currentStock)) {
-        throw new AppError(
-          "Shelf allocation cannot exceed the item's available overall stock",
-          409,
-        );
-      }
+        if (alreadyAllocated.plus(quantity).gt(item.currentStock)) {
+          throw new AppError(
+            "Shelf allocation cannot exceed the item's available overall stock",
+            409,
+          );
+        }
 
-      const stock = await tx.shelfStock.upsert({
-        where: {
-          shelfId_itemId: { shelfId, itemId },
-        },
-        create: {
-          businessId,
-          shelfId,
-          itemId,
-          quantity,
-        },
-        update: {
-          quantity: { increment: quantity },
-        },
-      });
+        const stock = await tx.shelfStock.upsert({
+          where: {
+            shelfId_itemId: { shelfId, itemId },
+          },
+          create: {
+            businessId,
+            shelfId,
+            itemId,
+            quantity,
+          },
+          update: {
+            quantity: { increment: quantity },
+          },
+        });
 
-      await tx.shelfMovement.create({
-        data: {
-          businessId,
-          itemId,
-          toShelfId: shelfId,
-          quantity,
-          movementType: "PLACEMENT",
-          reason: "Stock placed on shelf",
-          createdById: userId,
-        },
-      });
+        await tx.shelfMovement.create({
+          data: {
+            businessId,
+            itemId,
+            toShelfId: shelfId,
+            quantity,
+            movementType: "PLACEMENT",
+            reason: "Stock placed on shelf",
+            createdById: userId,
+          },
+        });
 
-      return { shelf, item, stock };
-    },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-  );
+        return { shelf, item, stock };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034"
+    ) {
+      throw new AppError(
+        "Shelf stock changed concurrently. Please retry",
+        409,
+      );
+    }
+
+    throw error;
+  }
 }
+
 
 /**
  * Transfer stock between shelves. Overall item stock stays unchanged.
