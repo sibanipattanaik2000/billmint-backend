@@ -57,14 +57,33 @@ export async function listShelves(businessId: string) {
     ),
   );
 
-  return prisma.shelfLocation.findMany({
+
+  const shelves = await prisma.shelfLocation.findMany({
     where: { businessId },
     include: {
       _count: { select: { stocks: true } },
     },
-    orderBy: { createdAt: "asc" },
+  });
+
+  const shelfOrder = new Map(
+    DEFAULT_SHELVES.map((name, index) => [name, index]),
+  );
+
+  return shelves.sort((a, b) => {
+    const orderA = shelfOrder.get(a.name as (typeof DEFAULT_SHELVES)[number]);
+    const orderB = shelfOrder.get(b.name as (typeof DEFAULT_SHELVES)[number]);
+
+    if (orderA !== undefined && orderB !== undefined) {
+      return orderA - orderB;
+    }
+
+    if (orderA !== undefined) return -1;
+    if (orderB !== undefined) return 1;
+
+    return a.name.localeCompare(b.name);
   });
 }
+
 
 /**
  * Show products stored on one shelf.
@@ -347,4 +366,5 @@ export async function transferShelfStock(
 
     throw error;
   }
+  
 }
