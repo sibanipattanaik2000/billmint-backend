@@ -261,6 +261,11 @@ export const saleItemSchema = z.object({
     .min(0)
     .max(100)
     .default(0),
+    shelfId: z
+    .string()
+    .uuid()
+    .optional()
+    .nullable(),
 });
 
 export const saleSchema = z.object({
