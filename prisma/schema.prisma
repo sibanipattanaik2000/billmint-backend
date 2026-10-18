@@ -151,6 +151,9 @@ model Business {
   stockMovements     StockMovement[]
   suppliers          Supplier[]
   units              Unit[]
+  shelfLocations     ShelfLocation[]
+  shelfStocks        ShelfStock[]
+  shelfMovements     ShelfMovement[]
 
   @@index([gstin])
   @@map("businesses")
@@ -360,6 +363,8 @@ model Item {
   stockAdjustments    StockAdjustment[]
   inventoryUnits      InventoryUnit[]
   stockMovements      StockMovement[]
+  shelfStocks         ShelfStock[]
+  shelfMovements      ShelfMovement[]
 
   @@unique([businessId, sku])
   @@unique([businessId, barcode])
@@ -376,38 +381,37 @@ model Item {
 }
 
 model InventoryUnit {
-  id              String              @id @default(uuid())
-  businessId      String
-  itemId          String
+  id         String @id @default(uuid())
+  businessId String
+  itemId     String
 
-  serialNumber    String?
-  imei            String?
+  serialNumber String?
+  imei         String?
 
-  status          InventoryUnitStatus @default(AVAILABLE)
+  status InventoryUnitStatus @default(AVAILABLE)
 
-  purchaseId      String?
-  purchaseItemId  String?
-  saleId          String?
-  saleItemId      String?
+  purchaseId     String?
+  purchaseItemId String?
+  saleId         String?
+  saleItemId     String?
 
-  purchasePrice   Decimal?            @db.Decimal(18, 2)
-  notes           String?
+  purchasePrice Decimal? @db.Decimal(18, 2)
+  notes         String?
 
-  createdAt       DateTime             @default(now())
-  updatedAt       DateTime             @updatedAt
-  soldAt          DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  soldAt    DateTime?
 
-  business        Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  item            Item                 @relation(fields: [itemId], references: [id])
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  item     Item     @relation(fields: [itemId], references: [id])
 
-  purchase        Purchase?            @relation(fields: [purchaseId], references: [id])
-  purchaseItem    PurchaseItem?        @relation(fields: [purchaseItemId], references: [id])
-  sale            Sale?                @relation(fields: [saleId], references: [id])
-  saleItem        SaleItem?            @relation(fields: [saleItemId], references: [id])
+  purchase     Purchase?     @relation(fields: [purchaseId], references: [id])
+  purchaseItem PurchaseItem? @relation(fields: [purchaseItemId], references: [id])
+  sale         Sale?         @relation(fields: [saleId], references: [id])
+  saleItem     SaleItem?     @relation(fields: [saleItemId], references: [id])
 
   @@unique([businessId, imei])
   @@unique([businessId, serialNumber])
-
   @@index([businessId, itemId])
   @@index([businessId, status])
   @@index([itemId, status])
@@ -415,8 +419,70 @@ model InventoryUnit {
   @@index([saleItemId])
   @@index([purchaseId])
   @@index([purchaseItemId])
-
   @@map("inventory_units")
+}
+
+model ShelfLocation {
+  id         String   @id @default(uuid())
+  businessId String
+  name       String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business      Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  stocks        ShelfStock[]
+  movementsFrom ShelfMovement[] @relation("ShelfMovementFrom")
+  movementsTo   ShelfMovement[] @relation("ShelfMovementTo")
+
+  @@unique([businessId, name])
+  @@index([businessId, isActive])
+  @@map("shelf_locations")
+}
+
+model ShelfStock {
+  id         String   @id @default(uuid())
+  businessId String
+  shelfId    String
+  itemId     String
+  quantity   Decimal  @default(0) @db.Decimal(18, 3)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  shelf    ShelfLocation @relation(fields: [shelfId], references: [id], onDelete: Restrict)
+  item     Item          @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([shelfId, itemId])
+  @@index([businessId, itemId])
+  @@index([businessId, shelfId])
+  @@map("shelf_stocks")
+}
+
+model ShelfMovement {
+  id            String   @id @default(uuid())
+  businessId    String
+  itemId        String
+  fromShelfId   String?
+  toShelfId     String?
+  quantity      Decimal  @db.Decimal(18, 3)
+  movementType  String
+  referenceType String?
+  referenceId   String?
+  reason        String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  business  Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  item      Item           @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  fromShelf ShelfLocation? @relation("ShelfMovementFrom", fields: [fromShelfId], references: [id], onDelete: Restrict)
+  toShelf   ShelfLocation? @relation("ShelfMovementTo", fields: [toShelfId], references: [id], onDelete: Restrict)
+
+  @@index([businessId, itemId, createdAt])
+  @@index([businessId, fromShelfId])
+  @@index([businessId, toShelfId])
+  @@index([referenceType, referenceId])
+  @@map("shelf_movements")
 }
 
 model StockMovement {
@@ -503,26 +569,27 @@ model Sale {
 }
 
 model SaleItem {
-  id              String   @id @default(uuid())
+  id              String          @id @default(uuid())
   saleId          String
   itemId          String?
   itemName        String
   hsnSac          String?
-  quantity        Decimal  @db.Decimal(18, 3)
+  quantity        Decimal         @db.Decimal(18, 3)
   unit            String?
-  rate            Decimal  @db.Decimal(18, 2)
-  discountPercent Decimal  @default(0) @db.Decimal(5, 2)
-  discountAmount  Decimal  @default(0) @db.Decimal(18, 2)
-  taxableAmount   Decimal  @db.Decimal(18, 2)
-  gstRate         Decimal  @default(0) @db.Decimal(5, 2)
-  cgstAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  sgstAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  igstAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  amount          Decimal  @db.Decimal(18, 2)
-  createdAt       DateTime @default(now())
-  item            Item?    @relation(fields: [itemId], references: [id])
-  sale            Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  inventoryUnits InventoryUnit[]
+  rate            Decimal         @db.Decimal(18, 2)
+  discountPercent Decimal         @default(0) @db.Decimal(5, 2)
+  discountAmount  Decimal         @default(0) @db.Decimal(18, 2)
+  taxableAmount   Decimal         @db.Decimal(18, 2)
+  gstRate         Decimal         @default(0) @db.Decimal(5, 2)
+  cgstAmount      Decimal         @default(0) @db.Decimal(18, 2)
+  sgstAmount      Decimal         @default(0) @db.Decimal(18, 2)
+  igstAmount      Decimal         @default(0) @db.Decimal(18, 2)
+  amount          Decimal         @db.Decimal(18, 2)
+  createdAt       DateTime        @default(now())
+  item            Item?           @relation(fields: [itemId], references: [id])
+  sale            Sale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  inventoryUnits  InventoryUnit[]
+
   @@index([saleId])
   @@index([itemId])
   @@map("sale_items")
@@ -570,26 +637,27 @@ model Purchase {
 }
 
 model PurchaseItem {
-  id              String   @id @default(uuid())
+  id              String          @id @default(uuid())
   purchaseId      String
   itemId          String?
   itemName        String
   hsnSac          String?
-  quantity        Decimal  @db.Decimal(18, 3)
+  quantity        Decimal         @db.Decimal(18, 3)
   unit            String?
-  rate            Decimal  @db.Decimal(18, 2)
-  discountPercent Decimal  @default(0) @db.Decimal(5, 2)
-  discountAmount  Decimal  @default(0) @db.Decimal(18, 2)
-  taxableAmount   Decimal  @db.Decimal(18, 2)
-  gstRate         Decimal  @default(0) @db.Decimal(5, 2)
-  cgstAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  sgstAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  igstAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  amount          Decimal  @db.Decimal(18, 2)
-  createdAt       DateTime @default(now())
-  item            Item?    @relation(fields: [itemId], references: [id])
-  purchase        Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  inventoryUnits InventoryUnit[]
+  rate            Decimal         @db.Decimal(18, 2)
+  discountPercent Decimal         @default(0) @db.Decimal(5, 2)
+  discountAmount  Decimal         @default(0) @db.Decimal(18, 2)
+  taxableAmount   Decimal         @db.Decimal(18, 2)
+  gstRate         Decimal         @default(0) @db.Decimal(5, 2)
+  cgstAmount      Decimal         @default(0) @db.Decimal(18, 2)
+  sgstAmount      Decimal         @default(0) @db.Decimal(18, 2)
+  igstAmount      Decimal         @default(0) @db.Decimal(18, 2)
+  amount          Decimal         @db.Decimal(18, 2)
+  createdAt       DateTime        @default(now())
+  item            Item?           @relation(fields: [itemId], references: [id])
+  purchase        Purchase        @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  inventoryUnits  InventoryUnit[]
+
   @@index([purchaseId])
   @@index([itemId])
   @@map("purchase_items")
@@ -875,22 +943,22 @@ model Expense {
 }
 
 model OtherIncome {
-  id            String       @id @default(uuid())
+  id            String    @id @default(uuid())
   businessId    String
   category      String?
-  amount        Decimal      @db.Decimal(18, 2)
-  date          DateTime     @default(now())
+  amount        Decimal   @db.Decimal(18, 2)
+  date          DateTime  @default(now())
   paymentMethod String?
   description   String?
   notes         String?
   reference     String?
   bankAccountId String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
 
-  bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id])
-  business      Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bankAccount BankAccount? @relation(fields: [bankAccountId], references: [id])
+  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
 
   @@index([businessId])
   @@index([businessId, deletedAt])
@@ -1076,7 +1144,6 @@ enum BankTxnType {
   RECEIPT
   OPENING
   ADJUSTMENT
-
 }
 
 enum ImportStatus {

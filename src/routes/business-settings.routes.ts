@@ -1,259 +1,237 @@
 
-import { Router, Response } from 'express';
-import { z } from 'zod';
-import { authenticate, AuthRequest } from '../middleware/auth';
-import { asyncHandler } from '../middleware/errorHandler';
-import prisma from '../utils/prisma';
+import { Router } from "express";
+import { z } from "zod";
+import prisma from "../utils/prisma";
+import { authenticate, AuthRequest } from "../middleware/auth";
+import { asyncHandler, AppError } from "../middleware/errorHandler";
 
 const router = Router();
 
-const businessUpdateSchema = z.object({
+const nullableText = (maxLength: number) =>
+  z.union([
+    z.string().trim().max(maxLength),
+    z.null(),
+  ]).optional();
+
+const businessSchema = z.object({
   name: z.string().trim().min(1).max(150).optional(),
   ownerName: z.string().trim().min(1).max(150).optional(),
-  email: z.string().trim().email().nullable().optional(),
-  phone: z.string().trim().max(30).nullable().optional(),
-  gstin: z
-    .string()
-    .trim()
-    .max(15)
-    .nullable()
-    .optional(),
-  address: z.string().trim().max(500).nullable().optional(),
-  state: z.string().trim().max(100).nullable().optional(),
+  email: nullableText(254),
+  phone: nullableText(30),
+  gstin: nullableText(15),
+  address: nullableText(1000),
+  city: nullableText(100),
+  state: nullableText(100),
   financialYearStart: z.number().int().min(1).max(12).optional(),
-});
+}).strict();
 
-const settingsUpdateSchema = z.object({
+const settingsSchema = z.object({
   invoicePrefix: z.string().trim().min(1).max(20).optional(),
-  invoiceNextNumber: z.number().int().min(1).max(2147483647).optional(),
+  invoiceNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
   quotationPrefix: z.string().trim().min(1).max(20).optional(),
-  quotationNextNumber: z.number().int().min(1).max(2147483647).optional(),
+  quotationNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
   challanPrefix: z.string().trim().min(1).max(20).optional(),
-  challanNextNumber: z.number().int().min(1).max(2147483647).optional(),
+  challanNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
   purchasePrefix: z.string().trim().min(1).max(20).optional(),
-  purchaseNextNumber: z.number().int().min(1).max(2147483647).optional(),
+  purchaseNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
   defaultTaxRate: z.number().min(0).max(100).optional(),
-  currency: z.string().trim().length(3).optional(),
-  currencySymbol: z.string().trim().min(1).max(10).optional(),
+  currency: z.enum(["INR", "USD"]).optional(),
+  currencySymbol: z.string().trim().min(1).max(5).optional(),
   decimalPlaces: z.number().int().min(0).max(4).optional(),
-  termsAndConditions: z.string().max(5000).nullable().optional(),
-  bankName: z.string().trim().max(150).nullable().optional(),
-  bankAccountNumber: z.string().trim().max(50).nullable().optional(),
-  bankIfsc: z.string().trim().max(20).nullable().optional(),
-  bankBranch: z.string().trim().max(150).nullable().optional(),
-  upiId: z.string().trim().max(100).nullable().optional(),
-  invoiceTemplate: z
-    .enum(['standard', 'modern', 'classic'])
-    .optional(),
-});
+  termsAndConditions: nullableText(10000),
+  bankName: nullableText(150),
+  bankAccountNumber: nullableText(50),
+  bankIfsc: nullableText(20),
+  bankBranch: nullableText(150),
+  upiId: nullableText(150),
+  invoiceTemplate: z.enum(["standard", "thermal", "modern"]).optional(),
+}).strict();
 
 const updateSchema = z.object({
-  business: businessUpdateSchema.optional(),
-  settings: settingsUpdateSchema.optional(),
-});
+  business: businessSchema.optional(),
+  settings: settingsSchema.optional(),
+}).strict().refine(
+  (value) => Boolean(value.business || value.settings),
+  { message: "Provide business fields or settings to update." },
+);
 
-function sendValidationError(
-  res: Response,
-  message: string,
-  details?: unknown,
-) {
-  return res.status(400).json({
-    success: false,
-    message,
-    errors: details,
+async function requireBusinessOwner(req: AuthRequest) {
+  if (!req.businessId || !req.user?.userId || !req.user?.memberId) {
+    throw new AppError("Authentication required", 401);
+  }
+
+  const member = await prisma.businessMember.findFirst({
+    where: {
+      id: req.user.memberId,
+      businessId: req.businessId,
+      userId: req.user.userId,
+      status: "ACTIVE",
+      isOwner: true,
+    },
+    select: { id: true },
   });
+
+  if (!member) {
+    throw new AppError(
+      "Only the business owner can change business settings.",
+      403,
+    );
+  }
 }
 
-/**
- * GET /business-settings
- * Returns company profile and accounting settings for the
- * authenticated business.
- */
 router.get(
-  '/',
+  "/",
   authenticate,
-  asyncHandler(async (req: AuthRequest, res: Response) => {
+  asyncHandler(async (req: AuthRequest, res) => {
     const businessId = req.businessId!;
 
-    const [business, settings] = await Promise.all([
-      prisma.business.findFirst({
-        where: {
-          id: businessId,
-          deletedAt: null,
-        },
-        select: {
-          id: true,
-          name: true,
-          ownerName: true,
-          email: true,
-          phone: true,
-          gstin: true,
-          pan: true,
-          address: true,
-          city: true,
-          state: true,
-          pinCode: true,
-          country: true,
-          financialYearStart: true,
-          logoUrl: true,
-          signatureUrl: true,
-          updatedAt: true,
-        },
-      }),
-      prisma.businessSettings.findUnique({
-        where: { businessId },
-      }),
-    ]);
+    const business = await prisma.business.findFirst({
+      where: {
+        id: businessId,
+        deletedAt: null,
+      },
+      include: {
+        settings: true,
+      },
+    });
 
     if (!business) {
-      res.status(404).json({
-        success: false,
-        message: 'Business not found.',
+      throw new AppError("Business not found.", 404);
+    }
+
+    let settings = business.settings;
+
+    if (!settings) {
+      settings = await prisma.businessSettings.upsert({
+        where: { businessId },
+        update: {},
+        create: { businessId },
       });
-      return;
     }
 
     res.json({
       success: true,
       data: {
-        business,
-        settings:
-          settings ?? {
-            invoicePrefix: 'INV',
-            invoiceNextNumber: 1,
-            quotationPrefix: 'QT',
-            quotationNextNumber: 1,
-            challanPrefix: 'DC',
-            challanNextNumber: 1,
-            purchasePrefix: 'PUR',
-            purchaseNextNumber: 1,
-            defaultTaxRate: 18,
-            currency: 'INR',
-            currencySymbol: '₹',
-            decimalPlaces: 2,
-            termsAndConditions: null,
-            bankName: null,
-            bankAccountNumber: null,
-            bankIfsc: null,
-            bankBranch: null,
-            upiId: null,
-            invoiceTemplate: 'standard',
-          },
+        business: {
+          id: business.id,
+          name: business.name,
+          ownerName: business.ownerName,
+          email: business.email,
+          phone: business.phone,
+          gstin: business.gstin,
+          pan: business.pan,
+          address: business.address,
+          city: business.city,
+          state: business.state,
+          pinCode: business.pinCode,
+          country: business.country,
+          financialYearStart: business.financialYearStart,
+          logoUrl: business.logoUrl,
+          signatureUrl: business.signatureUrl,
+          updatedAt: business.updatedAt,
+        },
+        settings,
       },
     });
   }),
 );
 
-/**
- * PATCH /business-settings
- * Updates only fields supplied by the authenticated business owner.
- */
 router.patch(
-  '/',
+  "/",
   authenticate,
-  asyncHandler(async (req: AuthRequest, res: Response) => {
-    if (!req.user?.isOwner) {
-      res.status(403).json({
-        success: false,
-        message: 'Only the business owner can update business settings.',
-      });
-      return;
-    }
+  asyncHandler(async (req: AuthRequest, res) => {
+    await requireBusinessOwner(req);
 
     const parsed = updateSchema.safeParse(req.body);
 
     if (!parsed.success) {
-      sendValidationError(
-        res,
-        'Please correct the invalid settings fields.',
-        parsed.error.flatten(),
+      throw new AppError(
+        parsed.error.issues
+          .map((issue) => issue.message)
+          .join(", "),
+        400,
       );
-      return;
-    }
-
-    const { business, settings } = parsed.data;
-
-    if (
-      (!business || Object.keys(business).length === 0) &&
-      (!settings || Object.keys(settings).length === 0)
-    ) {
-      sendValidationError(
-        res,
-        'Provide at least one setting to update.',
-      );
-      return;
     }
 
     const businessId = req.businessId!;
+    const { business: businessInput, settings: settingsInput } =
+      parsed.data;
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const existingBusiness = await tx.business.findFirst({
+    const result = await prisma.$transaction(async (tx) => {
+      if (businessInput) {
+        const existingBusiness = await tx.business.findFirst({
+          where: {
+            id: businessId,
+            deletedAt: null,
+          },
+          select: { id: true },
+        });
+
+        if (!existingBusiness) {
+          throw new AppError("Business not found.", 404);
+        }
+
+        await tx.business.update({
+          where: { id: businessId },
+          data: businessInput,
+        });
+      }
+
+      if (settingsInput) {
+        await tx.businessSettings.upsert({
+          where: { businessId },
+          update: settingsInput,
+          create: {
+            businessId,
+            ...settingsInput,
+          },
+        });
+      }
+
+      const updatedBusiness = await tx.business.findFirst({
         where: {
           id: businessId,
           deletedAt: null,
         },
-        select: { id: true },
+        include: {
+          settings: true,
+        },
       });
 
-      if (!existingBusiness) {
-        throw new Error('BUSINESS_NOT_FOUND');
+      if (!updatedBusiness || !updatedBusiness.settings) {
+        throw new AppError(
+          "Unable to load saved business settings.",
+          500,
+        );
       }
-
-      if (business && Object.keys(business).length > 0) {
-        await tx.business.update({
-          where: { id: businessId },
-          data: business,
-        });
-      }
-
-      if (settings && Object.keys(settings).length > 0) {
-        await tx.businessSettings.upsert({
-          where: { businessId },
-          create: {
-            businessId,
-            ...settings,
-          },
-          update: settings,
-        });
-      }
-
-      const [updatedBusiness, updatedSettings] = await Promise.all([
-        tx.business.findUnique({
-          where: { id: businessId },
-          select: {
-            id: true,
-            name: true,
-            ownerName: true,
-            email: true,
-            phone: true,
-            gstin: true,
-            pan: true,
-            address: true,
-            city: true,
-            state: true,
-            pinCode: true,
-            country: true,
-            financialYearStart: true,
-            logoUrl: true,
-            signatureUrl: true,
-            updatedAt: true,
-          },
-        }),
-        tx.businessSettings.findUnique({
-          where: { businessId },
-        }),
-      ]);
 
       return {
-        business: updatedBusiness,
-        settings: updatedSettings,
+        business: {
+          id: updatedBusiness.id,
+          name: updatedBusiness.name,
+          ownerName: updatedBusiness.ownerName,
+          email: updatedBusiness.email,
+          phone: updatedBusiness.phone,
+          gstin: updatedBusiness.gstin,
+          pan: updatedBusiness.pan,
+          address: updatedBusiness.address,
+          city: updatedBusiness.city,
+          state: updatedBusiness.state,
+          pinCode: updatedBusiness.pinCode,
+          country: updatedBusiness.country,
+          financialYearStart: updatedBusiness.financialYearStart,
+          logoUrl: updatedBusiness.logoUrl,
+          signatureUrl: updatedBusiness.signatureUrl,
+          updatedAt: updatedBusiness.updatedAt,
+        },
+        settings: updatedBusiness.settings,
       };
     });
 
     res.json({
       success: true,
-      message: 'Business settings updated successfully.',
-      data: updated,
+      message: "Business settings saved successfully.",
+      data: result,
     });
   }),
 );
