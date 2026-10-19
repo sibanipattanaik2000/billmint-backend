@@ -1,13 +1,18 @@
-import { Router, Response } from 'express';
-import authRoutes from './auth.routes';
-import { authenticate, AuthRequest } from '../middleware/auth';
-import { asyncHandler, AppError } from '../middleware/errorHandler';
+import { Router, Response } from "express";
+
+import authRoutes from "./auth.routes";
+import {
+  authenticate,
+  requirePermission,
+  AuthRequest,
+} from "../middleware/auth";
+import { asyncHandler, AppError } from "../middleware/errorHandler";
 import { z } from "zod";
-import * as dashboardService from '../services/dashboard.service';
-import * as customersService from '../services/customers.service';
-import * as itemsService from '../services/items.service';
-import * as salesService from '../services/sales.service';
-import purchasesRoutes from './purchases.routes';
+import * as dashboardService from "../services/dashboard.service";
+import * as customersService from "../services/customers.service";
+import * as itemsService from "../services/items.service";
+import * as salesService from "../services/sales.service";
+import purchasesRoutes from "./purchases.routes";
 import suppliersRoutes from "./suppliers.routes";
 import expensesRoutes from "./expenses.routes";
 import otherIncomeRoutes from "./other-income.routes";
@@ -21,20 +26,20 @@ import reportsRoutes from "./reports.routes";
 import gstReportsRoutes from "./gst-reports.routes";
 import partyStatementRoutes from "./party-statement.routes";
 import cashBankStatementRoutes from "./cash-bank-statement.routes";
-import businessSettingsRoutes from './business-settings.routes';
+import businessSettingsRoutes from "./business-settings.routes";
 import shelvesRoutes from "./shelves.routes";
 import {
   customerSchema,
   itemSchema,
   saleSchema,
   paginationSchema,
-} from '../validators/common';
-import prisma from '../utils/prisma';
+} from "../validators/common";
+import prisma from "../utils/prisma";
 
 const router = Router();
 
-router.use('/auth', authRoutes);
-router.use('/purchases', purchasesRoutes);
+router.use("/auth", authRoutes);
+router.use("/purchases", purchasesRoutes);
 router.use("/purchase-returns", purchaseReturnsRoutes);
 router.use("/suppliers", suppliersRoutes);
 router.use("/expenses", expensesRoutes);
@@ -48,14 +53,14 @@ router.use("/reports", reportsRoutes);
 router.use("/reports", gstReportsRoutes);
 router.use("/party-statement", partyStatementRoutes);
 router.use("/cash-bank", cashBankStatementRoutes);
-router.use('/business-settings', businessSettingsRoutes);
+router.use("/business-settings", businessSettingsRoutes);
 router.use("/shelves", shelvesRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */
 
 router.get(
-  '/dashboard',
+  "/dashboard",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await dashboardService.getDashboard(req.businessId!);
@@ -64,7 +69,7 @@ router.get(
       success: true,
       data,
     });
-  })
+  }),
 );
 
 /* =========================================================
@@ -72,25 +77,23 @@ router.get(
 ========================================================= */
 
 router.get(
-  '/customers',
+  "/customers",
   authenticate,
+  requirePermission("customers.view"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
 
-    const data = await customersService.listCustomers(
-      req.businessId!,
-      query
-    );
+    const data = await customersService.listCustomers(req.businessId!, query);
 
     res.json({
       success: true,
       ...data,
     });
-  })
+  }),
 );
 
 router.post(
-  '/customers',
+  "/customers",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = customerSchema.parse(req.body);
@@ -98,36 +101,33 @@ router.post(
     const data = await customersService.createCustomer(
       req.businessId!,
       body,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.status(201).json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.get(
-  '/customers/:id',
+  "/customers/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
-    const data = await customersService.getCustomer(
-      req.businessId!,
-      id
-    );
+    const data = await customersService.getCustomer(req.businessId!, id);
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.patch(
-  '/customers/:id',
+  "/customers/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
@@ -137,18 +137,18 @@ router.patch(
       req.businessId!,
       id,
       body,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.delete(
-  '/customers/:id',
+  "/customers/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
@@ -156,14 +156,14 @@ router.delete(
     const data = await customersService.deleteCustomer(
       req.businessId!,
       id,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 /* =========================================================
@@ -171,37 +171,33 @@ router.delete(
 ========================================================= */
 
 router.get(
-  '/items',
+  "/items",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
 
     const categoryId =
-      typeof req.query.categoryId === 'string'
+      typeof req.query.categoryId === "string"
         ? req.query.categoryId
         : undefined;
 
-    const lowStock =
-      req.query.lowStock === 'true';
+    const lowStock = req.query.lowStock === "true";
 
-    const data = await itemsService.listItems(
-      req.businessId!,
-      {
-        ...query,
-        categoryId,
-        lowStock,
-      }
-    );
+    const data = await itemsService.listItems(req.businessId!, {
+      ...query,
+      categoryId,
+      lowStock,
+    });
 
     res.json({
       success: true,
       ...data,
     });
-  })
+  }),
 );
 
 router.post(
-  '/items',
+  "/items",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = itemSchema.parse(req.body);
@@ -209,65 +205,56 @@ router.post(
     const data = await itemsService.createItem(
       req.businessId!,
       body,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.status(201).json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.get(
-  '/items/barcode/:barcode',
+  "/items/barcode/:barcode",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const barcode = String(req.params.barcode);
 
-    const data = await itemsService.searchByBarcode(
+    const data = await itemsService.searchByBarcode(req.businessId!, barcode);
+
+    res.json({
+      success: true,
+      data,
+    });
+  }),
+);
+router.get(
+  "/items/code/:sku",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await itemsService.searchBySku(
       req.businessId!,
-      barcode
+      String(req.params.sku),
+    );
+
+    res.json({ success: true, data });
+  }),
+);
+router.get(
+  "/items/imei/:imei",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await itemsService.searchByImei(
+      req.businessId!,
+      String(req.params.imei),
     );
 
     res.json({
       success: true,
       data,
     });
-  })
-);
-router.get(
-  '/items/code/:sku',
-  authenticate,
-  asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await itemsService.searchBySku(
-      req.businessId!,
-      String(req.params.sku)
-    );
-
-    res.json({ success: true, data });
-  })
-);
-router.get(
-  "/items/imei/:imei",
-  authenticate,
-  asyncHandler(
-    async (
-      req: AuthRequest,
-      res: Response,
-    ) => {
-      const data =
-        await itemsService.searchByImei(
-          req.businessId!,
-          String(req.params.imei),
-        );
-
-      res.json({
-        success: true,
-        data,
-      });
-    },
-  ),
+  }),
 );
 router.get(
   "/stock-adjustments",
@@ -294,25 +281,22 @@ router.get(
   }),
 );
 router.get(
-  '/items/:id',
+  "/items/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
-    const data = await itemsService.getItem(
-      req.businessId!,
-      id
-    );
+    const data = await itemsService.getItem(req.businessId!, id);
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.patch(
-  '/items/:id',
+  "/items/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
@@ -322,18 +306,18 @@ router.patch(
       req.businessId!,
       id,
       body,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.delete(
-  '/items/:id',
+  "/items/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
@@ -341,14 +325,14 @@ router.delete(
     const data = await itemsService.deleteItem(
       req.businessId!,
       id,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.post(
@@ -361,10 +345,7 @@ router.post(
       quantity: z.coerce
         .number()
         .finite()
-        .refine(
-          (value) => value !== 0,
-          "Adjustment quantity cannot be zero",
-        ),
+        .refine((value) => value !== 0, "Adjustment quantity cannot be zero"),
       reason: z.string().trim().min(1).max(255),
       notes: z.string().trim().max(5000).optional().nullable(),
     });
@@ -399,92 +380,77 @@ router.post(
 ========================================================= */
 
 router.get(
-  '/sales',
+  "/sales",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
 
     const status =
-      typeof req.query.status === 'string'
-        ? req.query.status
-        : undefined;
+      typeof req.query.status === "string" ? req.query.status : undefined;
 
     const from =
-      typeof req.query.from === 'string'
-        ? new Date(req.query.from)
-        : undefined;
+      typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
 
     const to =
-      typeof req.query.to === 'string'
-        ? new Date(req.query.to)
-        : undefined;
+      typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
 
     if (from && Number.isNaN(from.getTime())) {
-      throw new Error('Invalid from date');
+      throw new Error("Invalid from date");
     }
 
     if (to && Number.isNaN(to.getTime())) {
-      throw new Error('Invalid to date');
+      throw new Error("Invalid to date");
     }
 
-    const data = await salesService.getSales(
-      req.businessId!,
-      {
-        ...query,
-        status,
-        from,
-        to,
-      }
-    );
+    const data = await salesService.getSales(req.businessId!, {
+      ...query,
+      status,
+      from,
+      to,
+    });
 
     res.json({
       success: true,
       ...data,
     });
-  })
+  }),
 );
 
 router.post(
-  '/sales',
+  "/sales",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = saleSchema.parse(req.body);
 
-    const data = await salesService.createSale(
-      req.businessId!,
-      {
-        ...body,
-        createdById: req.user?.userId,
-      }
-    );
+    const data = await salesService.createSale(req.businessId!, {
+      ...body,
+      createdById: req.user?.userId,
+    });
 
     res.status(201).json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.get(
-  '/sales/:id',
+  "/sales/:id",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
-    const data = await salesService.getSaleById(
-      req.businessId!,
-      id
-    );
+    const data = await salesService.getSaleById(req.businessId!, id);
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 router.post(
-  '/sales/:id/cancel',
+  "/sales/:id/cancel",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
@@ -492,14 +458,14 @@ router.post(
     const data = await salesService.cancelSale(
       req.businessId!,
       id,
-      req.user?.userId
+      req.user?.userId,
     );
 
     res.json({
       success: true,
       data,
     });
-  })
+  }),
 );
 
 /* =========================================================
@@ -524,10 +490,7 @@ router.get(
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
-      console.error(
-        "[HEALTH] Database check failed:",
-        error,
-      );
+      console.error("[HEALTH] Database check failed:", error);
 
       res.status(503).json({
         success: false,

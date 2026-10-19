@@ -87,12 +87,11 @@ export async function registerBusiness(data: {
   const result = await prisma.$transaction(
     async (tx) => {
       // Ensure permissions exist
-      for (const perm of DEFAULT_PERMISSIONS) {
-        await tx.permission.createMany({
-          data: DEFAULT_PERMISSIONS,
-          skipDuplicates: true,
-        });
-      }
+      // Ensure all default permissions exist once.
+      await tx.permission.createMany({
+        data: DEFAULT_PERMISSIONS,
+        skipDuplicates: true,
+      });
 
       const allPerms = await tx.permission.findMany();
       // Create user
