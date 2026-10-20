@@ -3,9 +3,10 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  directUrl         = env("DIRECT_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {
@@ -322,9 +323,11 @@ model Item {
   id              String     @id @default(uuid())
   businessId      String
   name            String
+  modelName       String?
   sku             String?
   barcode         String?
   imei            String?
+  deviceCode      String?
   categoryId      String?
   brandId         String?
   unitId          String?
@@ -372,6 +375,7 @@ model Item {
   @@index([businessId])
   @@index([businessId, name])
   @@index([businessId, status])
+  @@index([businessId, modelName])
   @@index([businessId, currentStock])
   @@index([categoryId])
   @@index([barcode])
@@ -381,10 +385,10 @@ model Item {
 }
 
 model InventoryUnit {
-  id         String @id @default(uuid())
-  businessId String
-  itemId     String
-
+  id           String  @id @default(uuid())
+  businessId   String
+  itemId       String
+  itemCode     String?
   serialNumber String?
   imei         String?
 
@@ -412,6 +416,7 @@ model InventoryUnit {
 
   @@unique([businessId, imei])
   @@unique([businessId, serialNumber])
+  @@unique([businessId, itemCode])
   @@index([businessId, itemId])
   @@index([businessId, status])
   @@index([itemId, status])
