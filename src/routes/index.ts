@@ -195,7 +195,18 @@ router.get(
     });
   }),
 );
+router.get(
+  "/items/models",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await itemsService.listItemModels(req.businessId!);
 
+    res.json({
+      success: true,
+      data,
+    });
+  }),
+);
 router.post(
   "/items",
   authenticate,

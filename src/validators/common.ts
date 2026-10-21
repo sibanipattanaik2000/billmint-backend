@@ -92,6 +92,22 @@ export const itemSchema = z.object({
     .optional()
     .or(z.literal('')),
 
+  // Canonical model group, e.g. iPhone 17 Pro Max 512GB.
+  modelName: z
+    .string()
+    .trim()
+    .max(200)
+    .optional()
+    .or(z.literal('')),
+
+  // Optional code assigned to an individual physical device.
+  deviceCode: z
+    .string()
+    .trim()
+    .max(100)
+    .optional()
+    .or(z.literal('')),
+
   // IMEI is optional at the generic schema level because
   // services can also be non-serialized products/services.
   // createItem() will enforce it when trackSerial=true.
@@ -217,6 +233,10 @@ export const saleItemSchema = z.object({
     .trim()
     .min(1)
     .max(200),
+  // Exact physical units selected for a serialized sale.
+  inventoryUnitIds: z
+    .array(z.string().trim().min(1).max(100))
+    .optional(),
 
   hsnSac: z
     .string()

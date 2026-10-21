@@ -60,8 +60,8 @@ function handleItemUniqueError(error: unknown): never {
 }
 
 /* =========================================================
-   LIST ITEMS
-========================================================= */
+    LIST ITEMS
+  ========================================================= */
 
 export async function listItems(
   businessId: string,
@@ -208,8 +208,8 @@ export async function listItems(
 }
 
 /* =========================================================
-   GET ITEM
-========================================================= */
+    GET ITEM
+  ========================================================= */
 
 export async function getItem(businessId: string, id: string) {
   const item = await prisma.item.findFirst({
@@ -255,8 +255,8 @@ export async function getItem(businessId: string, id: string) {
 }
 
 /* =========================================================
-   CREATE ITEM
-========================================================= */
+    CREATE ITEM
+  ========================================================= */
 
 export async function createItem(
   businessId: string,
@@ -356,7 +356,9 @@ export async function createItem(
           businessId,
 
           name: data.name.trim(),
-
+          modelName:
+            normalizeOptionalString(data.modelName) || data.name.trim(),
+          deviceCode: normalizeOptionalString(data.deviceCode),
           sku,
           barcode,
           imei,
@@ -396,7 +398,18 @@ export async function createItem(
           trackExpiry: Boolean(data.trackExpiry),
         },
       });
-
+      if (trackSerial && imei) {
+        await tx.inventoryUnit.create({
+          data: {
+            businessId,
+            itemId: created.id,
+            itemCode: normalizeOptionalString(data.deviceCode) || sku,
+            imei,
+            status: "AVAILABLE",
+            purchasePrice: toDecimal(data.purchasePrice ?? 0) as any,
+          },
+        });
+      }
       if (openingStock.gt(0)) {
         await tx.stockMovement.create({
           data: {
@@ -451,8 +464,8 @@ export async function createItem(
 }
 
 /* =========================================================
-   UPDATE ITEM
-========================================================= */
+    UPDATE ITEM
+  ========================================================= */
 
 export async function updateItem(
   businessId: string,
@@ -594,7 +607,16 @@ export async function updateItem(
             data.salePrice !== undefined
               ? (toDecimal(data.salePrice) as any)
               : existing.salePrice,
+          modelName:
+            data.modelName !== undefined
+              ? normalizeOptionalString(data.modelName) ||
+                (data.name !== undefined ? data.name.trim() : existing.name)
+              : existing.modelName,
 
+          deviceCode:
+            data.deviceCode !== undefined
+              ? normalizeOptionalString(data.deviceCode)
+              : existing.deviceCode,
           mrp:
             data.mrp !== undefined
               ? data.mrp != null
@@ -674,8 +696,8 @@ export async function updateItem(
 }
 
 /* =========================================================
-   DELETE / ARCHIVE ITEM
-========================================================= */
+    DELETE / ARCHIVE ITEM
+  ========================================================= */
 
 export async function deleteItem(
   businessId: string,
@@ -733,8 +755,8 @@ export async function deleteItem(
 }
 
 /* =========================================================
-   BARCODE SEARCH
-========================================================= */
+    BARCODE SEARCH
+  ========================================================= */
 
 export async function searchByBarcode(businessId: string, barcode: string) {
   const normalized = barcode.trim();
@@ -787,8 +809,8 @@ export async function searchByBarcode(businessId: string, barcode: string) {
 }
 
 /* =========================================================
-   ITEM CODE / SKU SEARCH
-========================================================= */
+    ITEM CODE / SKU SEARCH
+  ========================================================= */
 
 export async function searchBySku(businessId: string, sku: string) {
   const normalizedSku = sku.trim();
@@ -915,8 +937,8 @@ export async function searchBySku(businessId: string, sku: string) {
 }
 
 /* =========================================================
-   IMEI SEARCH
-========================================================= */
+    IMEI SEARCH
+  ========================================================= */
 
 export async function searchByImei(businessId: string, imei: string) {
   const normalizedImei = imei.trim();
@@ -1015,8 +1037,8 @@ export async function searchByImei(businessId: string, imei: string) {
 }
 
 /* =========================================================
-   ADJUST STOCK
-========================================================= */
+    ADJUST STOCK
+  ========================================================= */
 
 export async function adjustStock(
   businessId: string,
@@ -1214,9 +1236,90 @@ export async function adjustStock(
     },
   );
 }
+
 /* =========================================================
-   LIST STOCK ADJUSTMENTS
+   MODEL-GROUPED INVENTORY
+   Used by the All Items model view.
 ========================================================= */
+
+export async function listItemModels(businessId: string) {
+  const items = await prisma.item.findMany({
+    where: {
+      businessId,
+      deletedAt: null,
+      status: "ACTIVE",
+    },
+    include: {
+      category: {
+        select: { id: true, name: true },
+      },
+      brand: {
+        select: { id: true, name: true },
+      },
+      unit: {
+        select: { id: true, name: true, shortName: true },
+      },
+      inventoryUnits: {
+        where: {
+          status: {
+            in: ["AVAILABLE", "RETURNED"],
+          },
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+        select: {
+          id: true,
+          itemCode: true,
+          imei: true,
+          serialNumber: true,
+          status: true,
+          purchasePrice: true,
+        },
+      },
+    },
+    orderBy: [
+      { modelName: "asc" },
+      { name: "asc" },
+      { id: "asc" },
+    ],
+  });
+
+  const groups = new Map<
+    string,
+    {
+      modelName: string;
+      totalStock: number;
+      items: typeof items;
+    }
+  >();
+
+  for (const item of items) {
+    // Exact model names stay separate. Legacy records fall back to name.
+    const modelName = item.modelName?.trim() || item.name.trim();
+
+    const group = groups.get(modelName);
+
+    if (group) {
+      group.totalStock += Number(item.currentStock ?? 0);
+      group.items.push(item);
+    } else {
+      groups.set(modelName, {
+        modelName,
+        totalStock: Number(item.currentStock ?? 0),
+        items: [item],
+      });
+    }
+  }
+
+  return Array.from(groups.values()).sort((a, b) =>
+    a.modelName.localeCompare(b.modelName),
+  );
+}
+
+/* =========================================================
+    LIST STOCK ADJUSTMENTS
+  ========================================================= */
 
 export async function listStockAdjustments(
   businessId: string,
