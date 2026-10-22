@@ -704,55 +704,121 @@ export async function deleteItem(
   id: string,
   userId?: string,
 ) {
-  const existing = await prisma.item.findFirst({
-    where: {
-      id,
-      businessId,
-      deletedAt: null,
-    },
-  });
-
-  if (!existing) {
-    throw new AppError("Item not found", 404);
-  }
-
-  if (existing.currentStock.gt(0)) {
-    throw new AppError("Cannot archive an item while stock is available", 400);
-  }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.item.update({
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.item.findFirst({
       where: {
         id,
+        businessId,
+        deletedAt: null,
       },
+      include: {
+        _count: {
+          select: {
+            purchaseItems: true,
+            saleItems: true,
+            purchaseReturnItems: true,
+            saleReturnItems: true,
+            quotationItems: true,
+            challanItems: true,
+            stockAdjustments: true,
+            shelfStocks: true,
+            shelfMovements: true,
+          },
+        },
+        inventoryUnits: {
+          select: {
+            id: true,
+            purchaseId: true,
+            purchaseItemId: true,
+            saleId: true,
+            saleItemId: true,
+          },
+        },
+      },
+    });
 
-      data: {
-        deletedAt: new Date(),
-        status: "ARCHIVED",
+    if (!existing) {
+      throw new AppError("Item not found", 404);
+    }
+
+    const references = existing._count;
+    const hasTransactions =
+      references.purchaseItems > 0 ||
+      references.saleItems > 0 ||
+      references.purchaseReturnItems > 0 ||
+      references.saleReturnItems > 0 ||
+      references.quotationItems > 0 ||
+      references.challanItems > 0 ||
+      references.stockAdjustments > 0 ||
+      references.shelfStocks > 0 ||
+      references.shelfMovements > 0;
+
+    if (hasTransactions) {
+      throw new AppError(
+        "This item is linked to existing transactions or shelf records and cannot be permanently deleted. Preserve its history and archive it instead.",
+        409,
+      );
+    }
+
+    const hasPurchasedOrSoldUnits = existing.inventoryUnits.some(
+      (unit) =>
+        unit.purchaseId !== null ||
+        unit.purchaseItemId !== null ||
+        unit.saleId !== null ||
+        unit.saleItemId !== null,
+    );
+
+    if (hasPurchasedOrSoldUnits) {
+      throw new AppError(
+        "This item has inventory units linked to purchases or sales and cannot be permanently deleted.",
+        409,
+      );
+    }
+
+    // Safe only after confirming the item has no transaction references.
+    await tx.inventoryUnit.deleteMany({
+      where: {
+        businessId,
+        itemId: id,
+      },
+    });
+
+    // Remove the item's standalone stock movements, including opening stock.
+    await tx.stockMovement.deleteMany({
+      where: {
+        businessId,
+        itemId: id,
       },
     });
 
     await tx.auditLog.create({
       data: {
         businessId,
-
         userId: userId || null,
-
         action: "DELETE",
-
         module: "items",
-
         recordId: id,
-
         recordName: existing.name,
+        details: JSON.stringify({
+          permanent: true,
+          reason: "User deleted an unused item",
+        }),
       },
     });
-  });
 
-  return {
-    message: "Item archived successfully",
-  };
+    await tx.item.delete({
+      where: {
+        id,
+      },
+    });
+
+    return {
+      message: "Item deleted successfully",
+      id,
+    };
+  });
 }
+
 
 /* =========================================================
     BARCODE SEARCH
