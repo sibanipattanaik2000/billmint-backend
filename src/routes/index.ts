@@ -37,7 +37,13 @@ import {
 import prisma from "../utils/prisma";
 
 const router = Router();
-
+function serializeBigInt<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, item) =>
+      typeof item === "bigint" ? item.toString() : item,
+    ),
+  ) as T;
+}
 router.use("/auth", authRoutes);
 router.use("/purchases", purchasesRoutes);
 router.use("/purchase-returns", purchaseReturnsRoutes);
@@ -67,11 +73,10 @@ router.get(
 
     res.json({
       success: true,
-      data,
+      data: serializeBigInt(data),
     });
   }),
 );
-
 /* =========================================================
    CUSTOMERS
 ========================================================= */
