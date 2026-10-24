@@ -181,7 +181,7 @@ export async function getDashboard(businessId: string) {
         SUM("grandTotal") AS total,
         COUNT(*) AS count
       FROM "sales"
-      WHERE "businessId" = ${businessId}::uuid
+      WHERE "businessId" = ${businessId}
         AND "deletedAt" IS NULL
         AND "status" != 'CANCELLED'
         AND "date" >= ${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}

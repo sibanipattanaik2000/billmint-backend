@@ -819,7 +819,6 @@ export async function deleteItem(
   });
 }
 
-
 /* =========================================================
     BARCODE SEARCH
   ========================================================= */
@@ -885,57 +884,103 @@ export async function searchBySku(businessId: string, sku: string) {
     throw new AppError("Item Code is required", 400);
   }
 
+  /*
+   * First look for an exact physical-device Item Code.
+   * This ensures that the correct device and IMEI are selected.
+   */
+  const inventoryUnit = await prisma.inventoryUnit.findFirst({
+    where: {
+      businessId,
+      itemCode: normalizedSku,
+    },
+    include: {
+      item: {
+        include: {
+          category: true,
+          brand: true,
+          unit: true,
+          supplier: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (inventoryUnit) {
+    if (
+      inventoryUnit.status !== "AVAILABLE" &&
+      inventoryUnit.status !== "RETURNED"
+    ) {
+      throw new AppError(
+        `This Item Code is not available for sale (status: ${inventoryUnit.status})`,
+        409,
+      );
+    }
+
+    if (
+      inventoryUnit.item.deletedAt !== null ||
+      inventoryUnit.item.status !== "ACTIVE"
+    ) {
+      throw new AppError(
+        "The item associated with this Item Code is inactive",
+        409,
+      );
+    }
+
+    return {
+      ...inventoryUnit.item,
+      itemCode: inventoryUnit.itemCode,
+      inventoryUnit: {
+        id: inventoryUnit.id,
+        itemCode: inventoryUnit.itemCode,
+        imei: inventoryUnit.imei,
+        serialNumber: inventoryUnit.serialNumber,
+        status: inventoryUnit.status,
+        purchasePrice: inventoryUnit.purchasePrice,
+      },
+      stockAvailable: true,
+    };
+  }
+
+  /*
+   * Backward compatibility:
+   * also support regular item SKU and device code lookup.
+   * Return the first available physical unit for a
+   * serial-tracked item so its IMEI can populate the sale.
+   */
   const item = await prisma.item.findFirst({
     where: {
       businessId,
-      sku: normalizedSku,
+      OR: [{ sku: normalizedSku }, { deviceCode: normalizedSku }],
       deletedAt: null,
       status: "ACTIVE",
     },
-
     include: {
-      category: {
-        select: {
-          id: true,
-          name: true,
-        },
-      },
-
-      brand: {
-        select: {
-          id: true,
-          name: true,
-        },
-      },
-
-      unit: {
-        select: {
-          id: true,
-          name: true,
-          shortName: true,
-        },
-      },
-
+      category: true,
+      brand: true,
+      unit: true,
       supplier: {
         select: {
           id: true,
           name: true,
         },
       },
-
       inventoryUnits: {
         where: {
           status: {
             in: ["AVAILABLE", "RETURNED"],
           },
         },
-
         orderBy: {
           createdAt: "asc",
         },
-
         select: {
           id: true,
+          itemCode: true,
           imei: true,
           serialNumber: true,
           status: true,
@@ -949,55 +994,16 @@ export async function searchBySku(businessId: string, sku: string) {
     throw new AppError(`Item Code "${normalizedSku}" not found`, 404);
   }
 
+  const availableUnit = item.inventoryUnits[0] ?? null;
+
   return {
-    id: item.id,
-    businessId: item.businessId,
-
-    itemCode: item.sku,
-
-    name: item.name,
-
-    barcode: item.barcode,
-
-    description: item.description,
-
-    purchasePrice: item.purchasePrice,
-    salePrice: item.salePrice,
-    mrp: item.mrp,
-
-    currentStock: item.currentStock,
-    minimumStock: item.minimumStock,
-
-    gstRate: item.gstRate,
-    hsnSac: item.hsnSac,
-    discountPercent: item.discountPercent,
-
-    trackSerial: item.trackSerial,
-    trackBatch: item.trackBatch,
-    trackExpiry: item.trackExpiry,
-
-    category: item.category,
-    brand: item.brand,
-    unit: item.unit,
-    supplier: item.supplier,
-
-    /*
-     * Available physical units.
-     *
-     * For normal products this will be empty.
-     * For phone/device products this contains the
-     * available IMEI/serial numbers.
-     */
-    inventoryUnits: item.inventoryUnits,
-
+    ...item,
+    itemCode: item.deviceCode || item.sku || normalizedSku,
+    inventoryUnit: availableUnit,
     availableInventoryUnits: item.inventoryUnits.length,
-
-    /*
-     * Backward compatibility for existing data.
-     *
-     * Existing products may still have Item.imei
-     * until the migration/backfill is completed.
-     */
+    stockAvailable: item.trackSerial
+      ? Boolean(availableUnit)
+      : Number(item.currentStock) > 0,
     legacyImei: item.imei,
   };
 }
@@ -1326,11 +1332,6 @@ export async function listItemModels(businessId: string) {
         select: { id: true, name: true, shortName: true },
       },
       inventoryUnits: {
-        where: {
-          status: {
-            in: ["AVAILABLE", "RETURNED"],
-          },
-        },
         orderBy: {
           createdAt: "asc",
         },
@@ -1344,11 +1345,7 @@ export async function listItemModels(businessId: string) {
         },
       },
     },
-    orderBy: [
-      { modelName: "asc" },
-      { name: "asc" },
-      { id: "asc" },
-    ],
+    orderBy: [{ modelName: "asc" }, { name: "asc" }, { id: "asc" }],
   });
 
   const groups = new Map<
