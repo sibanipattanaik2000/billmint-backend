@@ -1,4 +1,3 @@
-
 import { Router, Response } from "express";
 import { z } from "zod";
 import { authenticate, AuthRequest } from "../middleware/auth";
@@ -16,10 +15,7 @@ function parseDateFilters(query: unknown) {
   const parsed = dateQuerySchema.safeParse(query);
 
   if (!parsed.success) {
-    throw new AppError(
-      "Invalid report date filters",
-      400,
-    );
+    throw new AppError("Invalid report date filters", 400);
   }
 
   const { from, to } = parsed.data;
@@ -29,10 +25,7 @@ function parseDateFilters(query: unknown) {
 
     // Accept YYYY-MM-DD only to avoid timezone ambiguity.
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-      throw new AppError(
-        "Dates must use YYYY-MM-DD format",
-        400,
-      );
+      throw new AppError("Dates must use YYYY-MM-DD format", 400);
     }
 
     const date = new Date(
@@ -53,10 +46,7 @@ function parseDateFilters(query: unknown) {
   const toDate = parseDate(to, true);
 
   if (fromDate && toDate && fromDate > toDate) {
-    throw new AppError(
-      "'from' date cannot be later than 'to' date",
-      400,
-    );
+    throw new AppError("'from' date cannot be later than 'to' date", 400);
   }
 
   return {
@@ -118,9 +108,7 @@ router.get(
 router.get(
   "/stock-summary",
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await reportsService.getStockSummary(
-      req.businessId!,
-    );
+    const data = await reportsService.getStockSummary(req.businessId!);
 
     res.json({ success: true, data });
   }),
@@ -129,9 +117,7 @@ router.get(
 router.get(
   "/low-stock",
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await reportsService.getLowStockReport(
-      req.businessId!,
-    );
+    const data = await reportsService.getLowStockReport(req.businessId!);
 
     res.json({ success: true, data });
   }),
@@ -172,5 +158,20 @@ router.get(
     res.json({ success: true, data });
   }),
 );
+router.get(
+  "/payment-collection",
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const filters = parseDateFilters(req.query);
 
+    const data = await reportsService.getPaymentCollectionReport(
+      req.businessId!,
+      filters,
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
+  }),
+);
 export default router;

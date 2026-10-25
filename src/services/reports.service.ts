@@ -1,4 +1,3 @@
-
 import { InvoiceStatus, Prisma } from "@prisma/client";
 import prisma from "../utils/prisma";
 
@@ -7,10 +6,7 @@ type ReportFilters = {
   to?: Date;
 };
 
-const EXCLUDED_INVOICE_STATUSES: InvoiceStatus[] = [
-  "DRAFT",
-  "CANCELLED",
-];
+const EXCLUDED_INVOICE_STATUSES: InvoiceStatus[] = ["DRAFT", "CANCELLED"];
 
 function dateFilter(filters: ReportFilters) {
   if (!filters.from && !filters.to) {
@@ -37,19 +33,14 @@ function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-function invoiceWhere(
-  businessId: string,
-  filters: ReportFilters,
-) {
+function invoiceWhere(businessId: string, filters: ReportFilters) {
   return {
     businessId,
     deletedAt: null,
     status: {
       notIn: EXCLUDED_INVOICE_STATUSES,
     },
-    ...(dateFilter(filters)
-      ? { date: dateFilter(filters) }
-      : {}),
+    ...(dateFilter(filters) ? { date: dateFilter(filters) } : {}),
   };
 }
 
@@ -443,8 +434,7 @@ export async function getLowStockReport(businessId: string) {
 
   return items
     .filter(
-      (item) =>
-        quantity(item.currentStock) <= quantity(item.minimumStock),
+      (item) => quantity(item.currentStock) <= quantity(item.minimumStock),
     )
     .map((item) => ({
       id: item.id,
@@ -544,9 +534,7 @@ export async function getExpenseReport(
   const data = await prisma.expense.findMany({
     where: {
       businessId,
-      ...(dateFilter(filters)
-        ? { date: dateFilter(filters) }
-        : {}),
+      ...(dateFilter(filters) ? { date: dateFilter(filters) } : {}),
     },
     select: {
       id: true,
@@ -562,7 +550,12 @@ export async function getExpenseReport(
 
   const categories = new Map<
     string,
-    { categoryId: string | null; categoryName: string; total: number; count: number }
+    {
+      categoryId: string | null;
+      categoryName: string;
+      total: number;
+      count: number;
+    }
   >();
 
   for (const expense of data) {
@@ -593,113 +586,195 @@ export async function getExpenseReport(
   };
 }
 /**
- * Daily payment collection grouped by Cash, UPI, Card and Other.
- * Uses the actual receipt date, not the sales invoice date.
+ * Daily collections from customer receipts and separately recorded
+ * Other Income. Amounts are counted once per receipt, not once per invoice.
  */
 export async function getPaymentCollectionReport(
   businessId: string,
   filters: ReportFilters = {},
 ) {
-  const payments = await prisma.paymentIn.findMany({
-    where: {
-      businessId,
-      ...(dateFilter(filters) ? { date: dateFilter(filters) } : {}),
-    },
-    select: {
-      id: true,
-      date: true,
-      amount: true,
-      paymentMethod: true,
-      reference: true,
-      notes: true,
-      customer: {
-        select: { name: true },
+  const range = dateFilter(filters);
+
+  const [payments, otherIncomes] = await Promise.all([
+    prisma.paymentIn.findMany({
+      where: {
+        businessId,
+        ...(range ? { date: range } : {}),
       },
-      allocations: {
-        select: {
-          sale: {
-            select: {
-              invoiceNumber: true,
+      select: {
+        id: true,
+        date: true,
+        amount: true,
+        paymentMethod: true,
+        reference: true,
+        notes: true,
+        customer: {
+          select: { name: true },
+        },
+        bankAccount: {
+          select: { name: true },
+        },
+        allocations: {
+          select: {
+            sale: {
+              select: { invoiceNumber: true },
             },
           },
         },
       },
-    },
-    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-    take: 20000,
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      take: 20000,
+    }),
+
+    prisma.otherIncome.findMany({
+      where: {
+        businessId,
+        ...(range ? { date: range } : {}),
+      },
+      select: {
+        id: true,
+        date: true,
+        amount: true,
+        paymentMethod: true,
+        reference: true,
+        notes: true,
+        description: true,
+        category: true,
+        bankAccount: {
+          select: { name: true },
+        },
+      },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      take: 20000,
+    }),
+  ]);
+
+  type CollectionMethod = "Cash" | "UPI" | "Card" | "Bank" | "Other";
+
+  function classifyMethod(value: string | null | undefined): CollectionMethod {
+    const method = String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ");
+
+    if (/\bcash\b/.test(method)) {
+      return "Cash";
+    }
+
+    if (
+      /\bupi\b/.test(method) ||
+      method.includes("google pay") ||
+      method.includes("googlepay") ||
+      method.includes("gpay") ||
+      method.includes("phonepe") ||
+      method.includes("paytm") ||
+      method.includes("bhim") ||
+      method.includes("amazon pay")
+    ) {
+      return "UPI";
+    }
+
+    if (
+      /\bcard\b/.test(method) ||
+      method.includes("visa") ||
+      method.includes("mastercard") ||
+      method.includes("debit card") ||
+      method.includes("credit card") ||
+      method.includes("rupay card")
+    ) {
+      return "Card";
+    }
+
+    if (
+      method.includes("bank") ||
+      method.includes("transfer") ||
+      method.includes("net banking") ||
+      method.includes("netbanking") ||
+      /\bneft\b/.test(method) ||
+      /\brtgs\b/.test(method) ||
+      /\bimps\b/.test(method)
+    ) {
+      return "Bank";
+    }
+
+    return "Other";
+  }
+
+  const rows = [
+    ...payments.map((payment) => ({
+      id: payment.id,
+      date: payment.date,
+      source: "Customer Payment",
+      partyOrCategory: payment.customer?.name ?? "Walk-in / Unspecified",
+      invoiceNumbers:
+        payment.allocations
+          .map((allocation) => allocation.sale.invoiceNumber)
+          .filter(Boolean)
+          .join(", ") || "—",
+      paymentMethod: payment.paymentMethod,
+      method: classifyMethod(payment.paymentMethod),
+      bankAccountName: payment.bankAccount?.name ?? "",
+      reference: payment.reference ?? "",
+      description: payment.notes ?? "Customer receipt",
+      amount: money(payment.amount),
+    })),
+
+    ...otherIncomes.map((income) => ({
+      id: income.id,
+      date: income.date,
+      source: "Other Income",
+      partyOrCategory:
+        income.category?.trim() || income.description?.trim() || "Other Income",
+      invoiceNumbers: "—",
+      paymentMethod: income.paymentMethod ?? "Other",
+      method: classifyMethod(income.paymentMethod),
+      bankAccountName: income.bankAccount?.name ?? "",
+      reference: income.reference ?? "",
+      description: income.description ?? income.notes ?? "Other income receipt",
+      amount: money(income.amount),
+    })),
+  ].sort((a, b) => {
+    const dateDifference =
+      new Date(b.date).getTime() - new Date(a.date).getTime();
+
+    return dateDifference || a.id.localeCompare(b.id);
   });
 
   const totals = {
     cash: 0,
     upi: 0,
     card: 0,
+    bank: 0,
     other: 0,
     total: 0,
   };
 
-  const data = payments.map((payment) => {
-    const rawMethod = String(payment.paymentMethod ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/[_-]+/g, " ");
+  for (const row of rows) {
+    if (row.method === "Cash") totals.cash += row.amount;
+    else if (row.method === "UPI") totals.upi += row.amount;
+    else if (row.method === "Card") totals.card += row.amount;
+    else if (row.method === "Bank") totals.bank += row.amount;
+    else totals.other += row.amount;
 
-    let method: "Cash" | "UPI" | "Card" | "Other" = "Other";
-
-    if (/\bcash\b/.test(rawMethod)) {
-      method = "Cash";
-    } else if (
-      /\bupi\b/.test(rawMethod) ||
-      rawMethod.includes("google pay") ||
-      rawMethod.includes("gpay") ||
-      rawMethod.includes("phonepe") ||
-      rawMethod.includes("paytm upi") ||
-      rawMethod.includes("bhim")
-    ) {
-      method = "UPI";
-    } else if (
-      /\bcard\b/.test(rawMethod) ||
-      rawMethod.includes("credit card") ||
-      rawMethod.includes("debit card") ||
-      rawMethod.includes("visa") ||
-      rawMethod.includes("mastercard")
-    ) {
-      method = "Card";
-    }
-
-    const amount = Number(payment.amount ?? 0);
-
-    if (method === "Cash") totals.cash += amount;
-    else if (method === "UPI") totals.upi += amount;
-    else if (method === "Card") totals.card += amount;
-    else totals.other += amount;
-
-    totals.total += amount;
-
-    return {
-      id: payment.id,
-      date: payment.date,
-      customerName: payment.customer?.name ?? "Walk-in / Unspecified",
-      invoiceNumbers: payment.allocations
-        .map((allocation) => allocation.sale.invoiceNumber)
-        .filter(Boolean)
-        .join(", ") || "—",
-      paymentMethod: payment.paymentMethod,
-      method,
-      reference: payment.reference ?? "",
-      notes: payment.notes ?? "",
-      amount: Number(amount.toFixed(2)),
-    };
-  });
+    totals.total += row.amount;
+  }
 
   return {
     summary: {
-      cash: Number(totals.cash.toFixed(2)),
-      upi: Number(totals.upi.toFixed(2)),
-      card: Number(totals.card.toFixed(2)),
-      other: Number(totals.other.toFixed(2)),
-      total: Number(totals.total.toFixed(2)),
-      paymentCount: payments.length,
+      cash: roundMoney(totals.cash),
+      upi: roundMoney(totals.upi),
+      card: roundMoney(totals.card),
+      bank: roundMoney(totals.bank),
+      other: roundMoney(totals.other),
+      total: roundMoney(totals.total),
+      paymentCount: rows.length,
+      customerPaymentCount: payments.length,
+      otherIncomeCount: otherIncomes.length,
     },
-    data,
+    data: rows.map((row) => ({
+      ...row,
+      amount: roundMoney(row.amount),
+    })),
   };
 }
