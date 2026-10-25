@@ -464,7 +464,43 @@ router.get(
     });
   }),
 );
+router.put(
+  "/sales/:id",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
+    const body = saleSchema.parse(req.body);
 
+    const data = await salesService.updateSale(
+      req.businessId!,
+      id,
+      body,
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
+  }),
+);
+
+router.delete(
+  "/sales/:id",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = String(req.params.id);
+
+    const data = await salesService.deleteSale(
+      req.businessId!,
+      id,
+    );
+
+    res.json({
+      success: true,
+      data,
+    });
+  }),
+);
 router.post(
   "/sales/:id/cancel",
   authenticate,

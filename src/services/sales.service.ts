@@ -1544,3 +1544,924 @@ export async function cancelSale(
     },
   );
 }
+/* =========================================================
+   UPDATE EXISTING DRAFT SALE
+   Keeps the same sale ID and invoice number.
+========================================================= */
+
+
+export async function updateSale(
+  businessId: string,
+  id: string,
+  input: CreateSaleInput & { createdById?: string },
+) {
+  if (!input.items?.length) {
+    throw new AppError("At least one item is required", 400);
+  }
+
+  if (input.items.length > 100) {
+    throw new AppError("A sale cannot contain more than 100 line items", 400);
+  }
+
+  return prisma.$transaction(
+    async (tx) => {
+      const sale = await tx.sale.findFirst({
+        where: {
+          id,
+          businessId,
+          deletedAt: null,
+        },
+        include: {
+          items: {
+            include: {
+              inventoryUnits: true,
+            },
+          },
+          inventoryUnits: true,
+          payments: {
+            include: {
+              paymentIn: true,
+            },
+          },
+          returns: true,
+        },
+      });
+
+      if (!sale) {
+        throw new AppError("Invoice not found", 404);
+      }
+
+      if (sale.status === "CANCELLED") {
+        throw new AppError(
+          "A cancelled invoice cannot be edited.",
+          400,
+        );
+      }
+
+      if (sale.returns.length > 0) {
+        throw new AppError(
+          "This invoice has sales returns. Resolve those returns before editing the invoice.",
+          409,
+        );
+      }
+
+      /*
+       * Payment records and their ledger entries are historical
+       * records. Do not silently change the amount or payment
+       * method through invoice editing.
+       */
+      const recordedPaidAmount = Number(sale.paidAmount);
+      const requestedPaidAmount = Number(
+        input.paidAmount ?? recordedPaidAmount,
+      );
+
+      if (
+        Math.abs(requestedPaidAmount - recordedPaidAmount) > 0.005
+      ) {
+        throw new AppError(
+          "The recorded payment amount cannot be changed while editing an invoice. Use the Payments section to reconcile payments.",
+          409,
+        );
+      }
+
+      if (
+        sale.payments.length > 0 &&
+        input.paymentMethod &&
+        input.paymentMethod !== sale.paymentMethod
+      ) {
+        throw new AppError(
+          "This invoice has recorded payments. Change payment details through the Payments section.",
+          409,
+        );
+      }
+
+      if (
+        sale.payments.length > 0 &&
+        input.customerId !== undefined &&
+        (input.customerId || null) !== (sale.customerId || null)
+      ) {
+        throw new AppError(
+          "The customer cannot be changed while this invoice has recorded payments.",
+          409,
+        );
+      }
+
+      const business = await tx.business.findFirst({
+        where: {
+          id: businessId,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          state: true,
+        },
+      });
+
+      if (!business) {
+        throw new AppError("Business not found", 404);
+      }
+
+      let customerState: string | null = null;
+
+      if (input.customerId) {
+        const customer = await tx.customer.findFirst({
+          where: {
+            id: input.customerId,
+            businessId,
+            deletedAt: null,
+            status: "ACTIVE",
+          },
+          select: {
+            id: true,
+            state: true,
+          },
+        });
+
+        if (!customer) {
+          throw new AppError("Customer not found", 404);
+        }
+
+        customerState = customer.state;
+      }
+
+      const isInterState = Boolean(
+        business.state &&
+          customerState &&
+          business.state.toLowerCase() !==
+            customerState.toLowerCase(),
+      );
+
+      const itemIds = Array.from(
+        new Set(
+          input.items
+            .map((item) => item.itemId)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      );
+
+      const dbItems =
+        itemIds.length > 0
+          ? await tx.item.findMany({
+              where: {
+                id: { in: itemIds },
+                businessId,
+                deletedAt: null,
+                status: "ACTIVE",
+              },
+              select: {
+                id: true,
+                name: true,
+                currentStock: true,
+                gstRate: true,
+                hsnSac: true,
+                unitId: true,
+                trackSerial: true,
+              },
+            })
+          : [];
+
+      const itemMap = new Map(
+        dbItems.map((item) => [item.id, item]),
+      );
+
+      const oldQuantities = new Map<string, Decimal>();
+      for (const line of sale.items) {
+        if (!line.itemId) continue;
+
+        oldQuantities.set(
+          line.itemId,
+          (oldQuantities.get(line.itemId) ?? toDecimal(0)).plus(
+            toDecimal(Number(line.quantity)),
+          ),
+        );
+      }
+
+      const newQuantities = new Map<string, Decimal>();
+      const selectedUnits = new Map<string, string[]>();
+      const selectedUnitSet = new Set<string>();
+      const calculatedLines: CalculatedSaleLine[] = [];
+
+      for (const line of input.items) {
+        if (
+          !Number.isFinite(line.quantity) ||
+          line.quantity <= 0
+        ) {
+          throw new AppError(
+            `Invalid quantity for "${line.itemName}"`,
+            400,
+          );
+        }
+
+        if (!Number.isFinite(line.rate) || line.rate < 0) {
+          throw new AppError(
+            `Invalid rate for "${line.itemName}"`,
+            400,
+          );
+        }
+
+        const unitIds = validateInventoryUnitIds(line);
+        assertSerializedQuantity(line, unitIds);
+
+        let dbItem:
+          | (typeof dbItems)[number]
+          | undefined;
+
+        if (line.itemId) {
+          dbItem = itemMap.get(line.itemId);
+
+          if (!dbItem) {
+            throw new AppError(
+              `Item not found: ${line.itemName}`,
+              404,
+            );
+          }
+
+          if (dbItem.trackSerial && unitIds.length !== line.quantity) {
+            throw new AppError(
+              `Select exactly ${line.quantity} IMEI/serial unit(s) for "${dbItem.name}".`,
+              400,
+            );
+          }
+
+          if (!dbItem.trackSerial && unitIds.length > 0) {
+            throw new AppError(
+              `"${dbItem.name}" is not configured for serialized inventory.`,
+              400,
+            );
+          }
+
+          newQuantities.set(
+            dbItem.id,
+            (newQuantities.get(dbItem.id) ?? toDecimal(0)).plus(
+              toDecimal(line.quantity),
+            ),
+          );
+
+          if (unitIds.length > 0) {
+            const previous = selectedUnits.get(dbItem.id) ?? [];
+
+            for (const unitId of unitIds) {
+              if (selectedUnitSet.has(unitId)) {
+                throw new AppError(
+                  "The same IMEI/serial unit cannot be selected more than once.",
+                  400,
+                );
+              }
+              selectedUnitSet.add(unitId);
+            }
+
+            selectedUnits.set(dbItem.id, [...previous, ...unitIds]);
+          }
+
+          if (line.gstRate === undefined) {
+            line.gstRate = Number(dbItem.gstRate);
+          }
+
+          if (!line.hsnSac) {
+            line.hsnSac = dbItem.hsnSac || undefined;
+          }
+
+          if (!line.unit && dbItem.unitId) {
+            const unit = await tx.unit.findUnique({
+              where: { id: dbItem.unitId },
+              select: { shortName: true },
+            });
+            line.unit = unit?.shortName || undefined;
+          }
+        } else if (unitIds.length > 0) {
+          throw new AppError(
+            `A valid item is required for serialized item "${line.itemName}".`,
+            400,
+          );
+        }
+
+        const calc = calculateLineItem({
+          quantity: line.quantity,
+          rate: line.rate,
+          discountPercent: line.discountPercent ?? 0,
+          gstRate: line.gstRate ?? 0,
+          isInterState,
+        });
+
+        calculatedLines.push({
+          ...calc,
+          itemId: line.itemId || null,
+          itemName: line.itemName,
+          hsnSac: line.hsnSac,
+          unit: line.unit,
+          inventoryUnitIds: unitIds,
+        });
+      }
+
+      /*
+       * Only the units currently attached to this invoice may
+       * be reused if they are already SOLD. Other units must
+       * be available/returned.
+       */
+      const oldUnitIds = new Set(
+        sale.inventoryUnits
+          .filter(
+            (unit) =>
+              unit.saleId === sale.id &&
+              unit.status === "SOLD",
+          )
+          .map((unit) => unit.id),
+      );
+
+      if (selectedUnitSet.size > 0) {
+        const units = await tx.inventoryUnit.findMany({
+          where: {
+            id: { in: Array.from(selectedUnitSet) },
+            businessId,
+          },
+          select: {
+            id: true,
+            itemId: true,
+            status: true,
+            saleId: true,
+          },
+        });
+
+        if (units.length !== selectedUnitSet.size) {
+          throw new AppError(
+            "One or more selected IMEI/serial units were not found.",
+            409,
+          );
+        }
+
+        for (const unit of units) {
+          const belongsToCurrentSale =
+            unit.saleId === sale.id && oldUnitIds.has(unit.id);
+
+          if (
+            unit.status !== "AVAILABLE" &&
+            unit.status !== "RETURNED" &&
+            !belongsToCurrentSale
+          ) {
+            throw new AppError(
+              `Inventory unit ${unit.id} is not available for this invoice.`,
+              409,
+            );
+          }
+
+          const expectedItemId = selectedUnits.entries();
+          let matchingItemId: string | undefined;
+
+          for (const [itemId, ids] of expectedItemId) {
+            if (ids.includes(unit.id)) {
+              matchingItemId = itemId;
+              break;
+            }
+          }
+
+          if (matchingItemId && matchingItemId !== unit.itemId) {
+            throw new AppError(
+              "A selected IMEI/serial unit belongs to a different item.",
+              409,
+            );
+          }
+        }
+      }
+
+      /*
+       * Restore the previous invoice's serialized units first.
+       * All changes occur in this transaction, so a later error
+       * rolls back these changes.
+       */
+      if (oldUnitIds.size > 0) {
+        await tx.inventoryUnit.updateMany({
+          where: {
+            id: { in: Array.from(oldUnitIds) },
+            businessId,
+            saleId: sale.id,
+            status: "SOLD",
+          },
+          data: {
+            status: "RETURNED",
+            saleId: null,
+            saleItemId: null,
+            soldAt: null,
+          },
+        });
+      }
+
+      /*
+       * Restore previous shelf quantities using the original
+       * SALE movements. Keep the history; create reversal rows.
+       */
+      const previousShelfMovements = await tx.shelfMovement.findMany({
+        where: {
+          businessId,
+          referenceType: "sale",
+          referenceId: sale.id,
+          movementType: "SALE",
+        },
+      });
+
+      for (const movement of previousShelfMovements) {
+        if (!movement.fromShelfId) continue;
+
+        await tx.shelfStock.upsert({
+          where: {
+            shelfId_itemId: {
+              shelfId: movement.fromShelfId,
+              itemId: movement.itemId,
+            },
+          },
+          create: {
+            businessId,
+            shelfId: movement.fromShelfId,
+            itemId: movement.itemId,
+            quantity: movement.quantity,
+          },
+          update: {
+            quantity: { increment: movement.quantity },
+          },
+        });
+
+        await tx.shelfMovement.create({
+          data: {
+            businessId,
+            itemId: movement.itemId,
+            toShelfId: movement.fromShelfId,
+            quantity: movement.quantity,
+            movementType: "SALE_CANCEL",
+            referenceType: "sale_edit",
+            referenceId: sale.id,
+            reason: "Previous shelf stock restored during invoice edit",
+            createdById: input.createdById ?? null,
+          },
+        });
+      }
+
+      /*
+       * Restore normal stock consumed by the old finalized sale.
+       * Draft invoices have not consumed stock.
+       */
+      if (sale.status !== "DRAFT") {
+        for (const [itemId, quantity] of oldQuantities) {
+          const item = await tx.item.update({
+            where: { id: itemId },
+            data: {
+              currentStock: { increment: quantity as any },
+            },
+            select: { currentStock: true },
+          });
+
+          await tx.stockMovement.create({
+            data: {
+              businessId,
+              itemId,
+              type: "SALE_RETURN",
+              quantityIn: quantity as any,
+              balance: item.currentStock as any,
+              referenceType: "sale_edit",
+              referenceId: sale.id,
+              notes: "Previous sale quantity restored during invoice edit",
+            },
+          });
+        }
+      }
+
+      /*
+       * After restoring the old stock, validate the requested
+       * quantities against the now-current stock.
+       */
+  if (sale.status !== "DRAFT") {
+  for (const [itemId, requestedQty] of newQuantities) {
+    const item = await tx.item.findFirst({
+      where: {
+        id: itemId,
+        businessId,
+        deletedAt: null,
+        status: "ACTIVE",
+      },
+      select: {
+        id: true,
+        name: true,
+        currentStock: true,
+      },
+    });
+
+    if (!item) {
+      throw new AppError("Item not found or inactive.", 404);
+    }
+
+    // The existing invoice already consumed this quantity.
+    // Add it back when calculating stock available for this edit.
+    const previouslySoldQty =
+      oldQuantities.get(itemId) ?? toDecimal(0);
+
+    const availableForThisEdit = toDecimal(item.currentStock).plus(
+      previouslySoldQty,
+    );
+
+    if (availableForThisEdit.lessThan(requestedQty)) {
+      throw new AppError(
+        `Insufficient stock for "${item.name}". Available for this edit: ${availableForThisEdit.toString()}, Requested: ${requestedQty.toString()}`,
+        409,
+      );
+    }
+  }
+}
+
+      const totals = calculateInvoiceTotals(calculatedLines);
+      const paidAmount = toDecimal(recordedPaidAmount);
+
+      if (paidAmount.gt(totals.grandTotal)) {
+        throw new AppError(
+          "The new invoice total cannot be less than the amount already paid. Reconcile the payment first.",
+          409,
+        );
+      }
+
+      const balanceAmount = roundMoney(
+        totals.grandTotal.minus(paidAmount),
+      );
+
+      let nextStatus = sale.status;
+      if (sale.status !== "DRAFT") {
+        if (paidAmount.gte(totals.grandTotal) && totals.grandTotal.gt(0)) {
+          nextStatus = "PAID";
+        } else if (paidAmount.gt(0)) {
+          nextStatus = "PARTIALLY_PAID";
+        } else {
+          nextStatus = "UNPAID";
+        }
+      }
+
+      /*
+       * Update the same sale record. Do not generate another
+       * invoice number or create another sale.
+       */
+      await tx.sale.update({
+        where: { id: sale.id },
+        data: {
+          customerId: input.customerId || null,
+          date: input.date || sale.date,
+          dueDate:
+            input.dueDate === undefined
+              ? sale.dueDate
+              : input.dueDate,
+          status: nextStatus as any,
+          placeOfSupply:
+            input.placeOfSupply ||
+            customerState ||
+            business.state,
+          isInterState,
+          subtotal: totals.subtotal as any,
+          discountAmount: totals.discountAmount as any,
+          taxableAmount: totals.taxableAmount as any,
+          cgstAmount: totals.cgstAmount as any,
+          sgstAmount: totals.sgstAmount as any,
+          igstAmount: totals.igstAmount as any,
+          cessAmount: totals.cessAmount as any,
+          roundOff: totals.roundOff as any,
+          grandTotal: totals.grandTotal as any,
+          paidAmount: paidAmount as any,
+          balanceAmount: balanceAmount as any,
+          paymentMethod: sale.paymentMethod,
+          notes: input.notes ?? null,
+          terms: input.terms ?? null,
+        },
+      });
+
+      await tx.saleItem.deleteMany({
+        where: { saleId: sale.id },
+      });
+
+      const updatedLines = await Promise.all(
+        calculatedLines.map((line) =>
+          tx.saleItem.create({
+            data: {
+              saleId: sale.id,
+              itemId: line.itemId,
+              itemName: line.itemName,
+              hsnSac: line.hsnSac || null,
+              quantity: line.quantity as any,
+              unit: line.unit || null,
+              rate: line.rate as any,
+              discountPercent: line.discountPercent as any,
+              discountAmount: line.discountAmount as any,
+              taxableAmount: line.taxableAmount as any,
+              gstRate: line.gstRate as any,
+              cgstAmount: line.cgstAmount as any,
+              sgstAmount: line.sgstAmount as any,
+              igstAmount: line.igstAmount as any,
+              amount: line.amount as any,
+            },
+          }),
+        ),
+      );
+
+      if (nextStatus !== "DRAFT") {
+        /*
+         * Apply the new quantities and create new stock movements.
+         */
+        for (const [itemId, quantity] of newQuantities) {
+          const updated = await tx.item.updateMany({
+            where: {
+              id: itemId,
+              businessId,
+              deletedAt: null,
+              status: "ACTIVE",
+              currentStock: { gte: quantity as any },
+            },
+            data: {
+              currentStock: { decrement: quantity as any },
+            },
+          });
+
+          if (updated.count !== 1) {
+            throw new AppError(
+              "Stock changed while updating this invoice. Please retry.",
+              409,
+            );
+          }
+
+          const item = await tx.item.findUnique({
+            where: { id: itemId },
+            select: { currentStock: true },
+          });
+
+          if (!item) {
+            throw new AppError("Item not found while updating stock.", 409);
+          }
+
+          await tx.stockMovement.create({
+            data: {
+              businessId,
+              itemId,
+              type: "SALE",
+              quantityOut: quantity as any,
+              balance: item.currentStock as any,
+              referenceType: "sale",
+              referenceId: sale.id,
+              notes: "Stock adjusted for edited invoice",
+            },
+          });
+        }
+
+        /*
+         * Reapply requested shelf quantities, if a shelf was
+         * specified on a line.
+         */
+        const shelfTotals = new Map<string, Decimal>();
+
+        for (const line of input.items) {
+          if (!line.itemId || !line.shelfId) continue;
+
+          const key = `${line.itemId}:${line.shelfId}`;
+          shelfTotals.set(
+            key,
+            (shelfTotals.get(key) ?? toDecimal(0)).plus(
+              toDecimal(line.quantity),
+            ),
+          );
+        }
+
+        for (const [key, quantity] of shelfTotals) {
+          const [itemId, shelfId] = key.split(":");
+
+          const shelf = await tx.shelfLocation.findFirst({
+            where: {
+              id: shelfId,
+              businessId,
+              isActive: true,
+            },
+            select: { id: true, name: true },
+          });
+
+          if (!shelf) {
+            throw new AppError(
+              "The selected shelf was not found or is inactive.",
+              409,
+            );
+          }
+
+          const changed = await tx.shelfStock.updateMany({
+            where: {
+              businessId,
+              itemId,
+              shelfId,
+              quantity: { gte: quantity as any },
+            },
+            data: {
+              quantity: { decrement: quantity as any },
+            },
+          });
+
+          if (changed.count !== 1) {
+            throw new AppError(
+              `Insufficient stock on shelf "${shelf.name}".`,
+              409,
+            );
+          }
+
+          await tx.shelfMovement.create({
+            data: {
+              businessId,
+              itemId,
+              fromShelfId: shelfId,
+              quantity: quantity as any,
+              movementType: "SALE",
+              referenceType: "sale",
+              referenceId: sale.id,
+              reason: `Stock sold from shelf ${shelf.name} for edited invoice`,
+              createdById: input.createdById ?? null,
+            },
+          });
+        }
+
+        /*
+         * Mark the selected serialized units SOLD and attach
+         * each unit to the correct new sale line.
+         */
+        for (let index = 0; index < calculatedLines.length; index++) {
+          const line = calculatedLines[index];
+          const saleItem = updatedLines[index];
+
+          if (!line.inventoryUnitIds.length) continue;
+
+          const changed = await tx.inventoryUnit.updateMany({
+            where: {
+              id: { in: line.inventoryUnitIds },
+              businessId,
+              itemId: line.itemId!,
+              status: { in: ["AVAILABLE", "RETURNED"] },
+            },
+            data: {
+              status: "SOLD",
+              saleId: sale.id,
+              saleItemId: saleItem.id,
+              soldAt: new Date(),
+            },
+          });
+
+          /*
+           * Units belonging to the previous version of this
+           * same invoice were restored to RETURNED above, so
+           * they are included in this update as well.
+           */
+          if (changed.count !== line.inventoryUnitIds.length) {
+            const remainingOldSaleUnits = await tx.inventoryUnit.updateMany({
+              where: {
+                id: { in: line.inventoryUnitIds },
+                businessId,
+                itemId: line.itemId!,
+                saleId: null,
+                status: "RETURNED",
+              },
+              data: {
+                status: "SOLD",
+                saleId: sale.id,
+                saleItemId: saleItem.id,
+                soldAt: new Date(),
+              },
+            });
+
+            if (
+              changed.count + remainingOldSaleUnits.count !==
+              line.inventoryUnitIds.length
+            ) {
+              throw new AppError(
+                "One or more serialized units changed during the invoice update. Please retry.",
+                409,
+              );
+            }
+          }
+        }
+      }
+
+      /*
+       * Replace the old receivable with the new receivable.
+       * Recorded payments are left intact.
+       */
+      if (sale.customerId && Number(sale.balanceAmount) !== 0) {
+        await tx.customer.update({
+          where: { id: sale.customerId },
+          data: {
+            currentBalance: {
+              decrement: sale.balanceAmount as any,
+            },
+          },
+        });
+      }
+
+      if (input.customerId && balanceAmount.gt(0)) {
+        await tx.customer.update({
+          where: { id: input.customerId },
+          data: {
+            currentBalance: {
+              increment: balanceAmount as any,
+            },
+          },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          businessId,
+          userId: input.createdById ?? null,
+          action: "UPDATE",
+          module: "sales",
+          recordId: sale.id,
+          recordName: sale.invoiceNumber,
+          details: JSON.stringify({
+            previousStatus: sale.status,
+            newStatus: nextStatus,
+            previousTotal: String(sale.grandTotal),
+            newTotal: totals.grandTotal.toString(),
+          }),
+        },
+      });
+
+      return tx.sale.findFirst({
+        where: {
+          id: sale.id,
+          businessId,
+          deletedAt: null,
+        },
+        include: {
+          customer: true,
+          items: {
+            include: {
+              item: true,
+              inventoryUnits: {
+                select: {
+                  id: true,
+                  imei: true,
+                  serialNumber: true,
+                  status: true,
+                  purchasePrice: true,
+                },
+              },
+            },
+          },
+          payments: {
+            include: {
+              paymentIn: true,
+            },
+          },
+        },
+      });
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 10_000,
+      timeout: 20_000,
+    },
+  );
+}
+
+/* =========================================================
+   PERMANENTLY DELETE DRAFT SALE
+========================================================= */
+
+export async function deleteSale(businessId: string, id: string) {
+  return prisma.$transaction(async (tx) => {
+    const sale = await tx.sale.findFirst({
+      where: { id, businessId, deletedAt: null },
+      include: {
+        items: { include: { inventoryUnits: true } },
+        inventoryUnits: true,
+        payments: true,
+        returns: true,
+      },
+    });
+
+    if (!sale) {
+      throw new AppError("Sale invoice not found", 404);
+    }
+
+    if (sale.status !== "DRAFT") {
+      throw new AppError(
+        "Only draft invoices can be permanently deleted. For finalized invoices, use Cancel Invoice to preserve stock and accounting records.",
+        409,
+      );
+    }
+
+    if (
+      sale.payments.length > 0 ||
+      sale.returns.length > 0 ||
+      sale.inventoryUnits.length > 0 ||
+      sale.items.some((item) => item.inventoryUnits.length > 0)
+    ) {
+      throw new AppError(
+        "This invoice has linked payment, return, or inventory records and cannot be permanently deleted safely.",
+        409,
+      );
+    }
+
+    // Delete the line rows first, then permanently delete the invoice row.
+    await tx.saleItem.deleteMany({
+      where: { saleId: id },
+    });
+
+    await tx.sale.delete({
+      where: { id },
+    });
+
+    return { id, invoiceNumber: sale.invoiceNumber, deleted: true };
+  });
+}
