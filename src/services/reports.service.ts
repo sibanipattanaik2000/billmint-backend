@@ -592,3 +592,114 @@ export async function getExpenseReport(
     data,
   };
 }
+/**
+ * Daily payment collection grouped by Cash, UPI, Card and Other.
+ * Uses the actual receipt date, not the sales invoice date.
+ */
+export async function getPaymentCollectionReport(
+  businessId: string,
+  filters: ReportFilters = {},
+) {
+  const payments = await prisma.paymentIn.findMany({
+    where: {
+      businessId,
+      ...(dateFilter(filters) ? { date: dateFilter(filters) } : {}),
+    },
+    select: {
+      id: true,
+      date: true,
+      amount: true,
+      paymentMethod: true,
+      reference: true,
+      notes: true,
+      customer: {
+        select: { name: true },
+      },
+      allocations: {
+        select: {
+          sale: {
+            select: {
+              invoiceNumber: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    take: 20000,
+  });
+
+  const totals = {
+    cash: 0,
+    upi: 0,
+    card: 0,
+    other: 0,
+    total: 0,
+  };
+
+  const data = payments.map((payment) => {
+    const rawMethod = String(payment.paymentMethod ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[_-]+/g, " ");
+
+    let method: "Cash" | "UPI" | "Card" | "Other" = "Other";
+
+    if (/\bcash\b/.test(rawMethod)) {
+      method = "Cash";
+    } else if (
+      /\bupi\b/.test(rawMethod) ||
+      rawMethod.includes("google pay") ||
+      rawMethod.includes("gpay") ||
+      rawMethod.includes("phonepe") ||
+      rawMethod.includes("paytm upi") ||
+      rawMethod.includes("bhim")
+    ) {
+      method = "UPI";
+    } else if (
+      /\bcard\b/.test(rawMethod) ||
+      rawMethod.includes("credit card") ||
+      rawMethod.includes("debit card") ||
+      rawMethod.includes("visa") ||
+      rawMethod.includes("mastercard")
+    ) {
+      method = "Card";
+    }
+
+    const amount = Number(payment.amount ?? 0);
+
+    if (method === "Cash") totals.cash += amount;
+    else if (method === "UPI") totals.upi += amount;
+    else if (method === "Card") totals.card += amount;
+    else totals.other += amount;
+
+    totals.total += amount;
+
+    return {
+      id: payment.id,
+      date: payment.date,
+      customerName: payment.customer?.name ?? "Walk-in / Unspecified",
+      invoiceNumbers: payment.allocations
+        .map((allocation) => allocation.sale.invoiceNumber)
+        .filter(Boolean)
+        .join(", ") || "—",
+      paymentMethod: payment.paymentMethod,
+      method,
+      reference: payment.reference ?? "",
+      notes: payment.notes ?? "",
+      amount: Number(amount.toFixed(2)),
+    };
+  });
+
+  return {
+    summary: {
+      cash: Number(totals.cash.toFixed(2)),
+      upi: Number(totals.upi.toFixed(2)),
+      card: Number(totals.card.toFixed(2)),
+      other: Number(totals.other.toFixed(2)),
+      total: Number(totals.total.toFixed(2)),
+      paymentCount: payments.length,
+    },
+    data,
+  };
+}
