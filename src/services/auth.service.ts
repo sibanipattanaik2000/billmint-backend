@@ -318,7 +318,12 @@ export async function registerBusiness(data: {
   };
 }
 
-export async function loginUser(userId: string, password: string, ip?: string) {
+export async function loginUser(
+  userId: string,
+  password: string,
+  storeCode: string,
+  ip?: string,
+) {
   const user = await prisma.user.findUnique({
     where: { userId },
     include: {
@@ -363,13 +368,22 @@ export async function loginUser(userId: string, password: string, ip?: string) {
     throw new AppError("No active business membership found", 403);
   }
 
+  const membership = user.memberships.find(
+    (entry) =>
+      entry.business.storeCode.toUpperCase() === storeCode.toUpperCase(),
+  );
+
+  if (!membership) {
+    throw new AppError("Invalid Store Code or credentials", 401);
+  }
+
   // Reset failed logins
   await prisma.user.update({
     where: { id: user.id },
     data: { failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() },
   });
 
-  const membership = user.memberships[0];
+  //const membership = user.memberships[0];
 
   const tokenPayload: JwtPayload = {
     userId: user.id,
@@ -406,6 +420,7 @@ export async function loginUser(userId: string, password: string, ip?: string) {
       setupCompleted: membership.business.setupCompleted,
       state: membership.business.state,
       gstin: membership.business.gstin,
+      storeCode: true,
     },
     role: membership.role.name,
     isOwner: membership.isOwner,

@@ -310,6 +310,24 @@ export async function createItem(
        * concurrency protection. This pre-check only gives
        * the user a nicer error before attempting the insert.
        */
+
+
+            const sourceStoreCode =
+        normalizeOptionalString(data.sourceStoreCode)?.toUpperCase() || null;
+
+      if (sourceStoreCode) {
+        const sourceStore = await tx.business.findFirst({
+          where: {
+            storeCode: sourceStoreCode,
+            deletedAt: null,
+          },
+          select: { storeCode: true },
+        });
+
+        if (!sourceStore) {
+          throw new AppError("Source Store Code does not exist", 400);
+        }
+      }
       const existing = await tx.item.findFirst({
         where: {
           businessId,
@@ -354,7 +372,7 @@ export async function createItem(
       const created = await tx.item.create({
         data: {
           businessId,
-
+          sourceStoreCode,
           name: data.name.trim(),
           modelName:
             normalizeOptionalString(data.modelName) || data.name.trim(),

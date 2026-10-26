@@ -1,5 +1,5 @@
 import { Router, Response } from "express";
-
+import storesRoutes from "./stores.routes";
 import authRoutes from "./auth.routes";
 import {
   authenticate,
@@ -61,6 +61,7 @@ router.use("/party-statement", partyStatementRoutes);
 router.use("/cash-bank", cashBankStatementRoutes);
 router.use("/business-settings", businessSettingsRoutes);
 router.use("/shelves", shelvesRoutes);
+router.use("/stores", storesRoutes);
 /* =========================================================
    DASHBOARD
 ========================================================= */

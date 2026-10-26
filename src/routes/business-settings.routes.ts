@@ -1,4 +1,3 @@
-
 import { Router } from "express";
 import { z } from "zod";
 import prisma from "../utils/prisma";
@@ -8,52 +7,66 @@ import { asyncHandler, AppError } from "../middleware/errorHandler";
 const router = Router();
 
 const nullableText = (maxLength: number) =>
-  z.union([
-    z.string().trim().max(maxLength),
-    z.null(),
-  ]).optional();
+  z.union([z.string().trim().max(maxLength), z.null()]).optional();
 
-const businessSchema = z.object({
-  name: z.string().trim().min(1).max(150).optional(),
-  ownerName: z.string().trim().min(1).max(150).optional(),
-  email: nullableText(254),
-  phone: nullableText(30),
-  gstin: nullableText(15),
-  address: nullableText(1000),
-  city: nullableText(100),
-  state: nullableText(100),
-  financialYearStart: z.number().int().min(1).max(12).optional(),
-}).strict();
+const businessSchema = z
+  .object({
+    name: z.string().trim().min(1).max(150).optional(),
+    ownerName: z.string().trim().min(1).max(150).optional(),
+    email: nullableText(254),
+    phone: nullableText(30),
+    gstin: nullableText(15),
+    address: nullableText(1000),
+    city: nullableText(100),
+    state: nullableText(100),
+    financialYearStart: z.number().int().min(1).max(12).optional(),
+    storeCode: z
+      .string()
+      .trim()
+      .min(3, "Store Code must be at least 3 characters")
+      .max(20)
+      .regex(
+        /^[A-Za-z0-9_-]+$/,
+        "Use only letters, numbers, hyphens or underscores",
+      )
+      .transform((value) => value.toUpperCase())
+      .optional(),
+  })
+  .strict();
 
-const settingsSchema = z.object({
-  invoicePrefix: z.string().trim().min(1).max(20).optional(),
-  invoiceNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
-  quotationPrefix: z.string().trim().min(1).max(20).optional(),
-  quotationNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
-  challanPrefix: z.string().trim().min(1).max(20).optional(),
-  challanNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
-  purchasePrefix: z.string().trim().min(1).max(20).optional(),
-  purchaseNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
-  defaultTaxRate: z.number().min(0).max(100).optional(),
-  currency: z.enum(["INR", "USD"]).optional(),
-  currencySymbol: z.string().trim().min(1).max(5).optional(),
-  decimalPlaces: z.number().int().min(0).max(4).optional(),
-  termsAndConditions: nullableText(10000),
-  bankName: nullableText(150),
-  bankAccountNumber: nullableText(50),
-  bankIfsc: nullableText(20),
-  bankBranch: nullableText(150),
-  upiId: nullableText(150),
-  invoiceTemplate: z.enum(["standard", "thermal", "modern"]).optional(),
-}).strict();
+const settingsSchema = z
+  .object({
+    invoicePrefix: z.string().trim().min(1).max(20).optional(),
+    invoiceNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    quotationPrefix: z.string().trim().min(1).max(20).optional(),
+    quotationNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    challanPrefix: z.string().trim().min(1).max(20).optional(),
+    challanNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    purchasePrefix: z.string().trim().min(1).max(20).optional(),
+    purchaseNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    defaultTaxRate: z.number().min(0).max(100).optional(),
+    currency: z.enum(["INR", "USD"]).optional(),
+    currencySymbol: z.string().trim().min(1).max(5).optional(),
+    decimalPlaces: z.number().int().min(0).max(4).optional(),
+    termsAndConditions: nullableText(10000),
+    bankName: nullableText(150),
+    bankAccountNumber: nullableText(50),
+    bankIfsc: nullableText(20),
+    bankBranch: nullableText(150),
+    upiId: nullableText(150),
+    invoiceTemplate: z.enum(["standard", "thermal", "modern"]).optional(),
+  })
+  .strict();
 
-const updateSchema = z.object({
-  business: businessSchema.optional(),
-  settings: settingsSchema.optional(),
-}).strict().refine(
-  (value) => Boolean(value.business || value.settings),
-  { message: "Provide business fields or settings to update." },
-);
+const updateSchema = z
+  .object({
+    business: businessSchema.optional(),
+    settings: settingsSchema.optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.business || value.settings), {
+    message: "Provide business fields or settings to update.",
+  });
 
 async function requireBusinessOwner(req: AuthRequest) {
   if (!req.businessId || !req.user?.userId || !req.user?.memberId) {
@@ -129,6 +142,7 @@ router.get(
           logoUrl: business.logoUrl,
           signatureUrl: business.signatureUrl,
           updatedAt: business.updatedAt,
+          storeCode: business.storeCode,
         },
         settings,
       },
@@ -146,17 +160,30 @@ router.patch(
 
     if (!parsed.success) {
       throw new AppError(
-        parsed.error.issues
-          .map((issue) => issue.message)
-          .join(", "),
+        parsed.error.issues.map((issue) => issue.message).join(", "),
         400,
       );
     }
 
     const businessId = req.businessId!;
-    const { business: businessInput, settings: settingsInput } =
-      parsed.data;
+    const { business: businessInput, settings: settingsInput } = parsed.data;
+    if (businessInput?.storeCode) {
+      const existingStore = await prisma.business.findFirst({
+        where: {
+          storeCode: businessInput.storeCode,
+          id: { not: businessId },
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
 
+      if (existingStore) {
+        throw new AppError(
+          "That Store Code is already in use. Please choose another.",
+          409,
+        );
+      }
+    }
     const result = await prisma.$transaction(async (tx) => {
       if (businessInput) {
         const existingBusiness = await tx.business.findFirst({
@@ -199,10 +226,7 @@ router.patch(
       });
 
       if (!updatedBusiness || !updatedBusiness.settings) {
-        throw new AppError(
-          "Unable to load saved business settings.",
-          500,
-        );
+        throw new AppError("Unable to load saved business settings.", 500);
       }
 
       return {
@@ -223,6 +247,7 @@ router.patch(
           logoUrl: updatedBusiness.logoUrl,
           signatureUrl: updatedBusiness.signatureUrl,
           updatedAt: updatedBusiness.updatedAt,
+          storeCode: updatedBusiness.storeCode,
         },
         settings: updatedBusiness.settings,
       };

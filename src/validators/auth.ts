@@ -46,11 +46,20 @@ export const registerSchema = z.object({
   path: ['confirmPassword'],
 });
 
+
 export const loginSchema = z.object({
-  userId: z.string().min(1, 'User ID is required'),
-  password: z.string().min(1, 'Password is required'),
+  storeCode: z
+    .string()
+    .trim()
+    .min(3, "Store Code is required")
+    .max(20)
+    .regex(/^[A-Za-z0-9_-]+$/, "Invalid Store Code")
+    .transform((value) => value.toUpperCase()),
+  userId: z.string().trim().min(1, "User ID is required"),
+  password: z.string().min(1, "Password is required"),
   rememberMe: z.boolean().optional(),
 });
+
 
 export const forgotPasswordSchema = z.object({
   userId: z.string().min(1, 'User ID is required'),
