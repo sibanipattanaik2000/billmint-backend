@@ -28,6 +28,7 @@ import partyStatementRoutes from "./party-statement.routes";
 import cashBankStatementRoutes from "./cash-bank-statement.routes";
 import businessSettingsRoutes from "./business-settings.routes";
 import shelvesRoutes from "./shelves.routes";
+import * as stockTransfersService from "../services/stock-transfers.service";
 import {
   customerSchema,
   itemSchema,
@@ -413,18 +414,13 @@ router.get(
         ? req.query.storeCode.trim().toUpperCase()
         : undefined;
 
-    const parseStoreSalesDate = (
-      value: string,
-      endOfDay = false,
-    ): Date => {
+    const parseStoreSalesDate = (value: string, endOfDay = false): Date => {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
         throw new AppError("Dates must use YYYY-MM-DD format", 400);
       }
 
       const parsed = new Date(
-        `${value}T${
-          endOfDay ? "23:59:59.999" : "00:00:00.000"
-        }Z`,
+        `${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`,
       );
 
       if (
@@ -448,10 +444,7 @@ router.get(
         : undefined;
 
     if (from && to && from > to) {
-      throw new AppError(
-        "The from date cannot be after the to date",
-        400,
-      );
+      throw new AppError("The from date cannot be after the to date", 400);
     }
 
     const where: any = {
@@ -736,4 +729,58 @@ router.get(
   }),
 );
 
+router.get(
+  "/stock-transfers",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await stockTransfersService.listStockTransfers(
+      req.businessId!,
+    );
+
+    res.json({
+      success: true,
+      data: serializeBigInt(data),
+    });
+  }),
+);
+
+router.post(
+  "/stock-transfers",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const bodySchema = z.object({
+      toStoreCode: z.string().trim().min(1).max(20),
+      items: z
+        .array(
+          z.object({
+            itemId: z.string().uuid(),
+            quantity: z.coerce.number().finite().positive(),
+          }),
+        )
+        .min(1)
+        .max(100),
+      notes: z.string().trim().max(5000).optional().nullable(),
+    });
+
+    const parsed = bodySchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
+
+    const data = await stockTransfersService.createStockTransfer(
+      req.businessId!,
+      parsed.data,
+      req.user?.userId,
+    );
+
+    res.status(201).json({
+      success: true,
+      data: serializeBigInt(data),
+    });
+  }),
+);
 export default router;

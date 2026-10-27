@@ -155,7 +155,10 @@ model Business {
   shelfLocations     ShelfLocation[]
   shelfStocks        ShelfStock[]
   shelfMovements     ShelfMovement[]
-  storeCode String @unique @default(dbgenerated())
+  storeCode          String            @unique @default(dbgenerated())
+  transfersSent      StockTransfer[]   @relation("TransferFrom")
+  transfersReceived  StockTransfer[]   @relation("TransferTo")
+
   @@index([gstin])
   @@map("businesses")
 }
@@ -320,54 +323,55 @@ model Unit {
 }
 
 model Item {
-  id              String     @id @default(uuid())
-  businessId      String
-  name            String
-  modelName       String?
-  sku             String?
-  barcode         String?
-  imei            String?
-  deviceCode      String?
-  categoryId      String?
-  brandId         String?
-  unitId          String?
-  description     String?
-  purchasePrice   Decimal    @default(0) @db.Decimal(18, 2)
-  salePrice       Decimal    @default(0) @db.Decimal(18, 2)
-  mrp             Decimal?   @db.Decimal(18, 2)
-  openingStock    Decimal    @default(0) @db.Decimal(18, 3)
-  currentStock    Decimal    @default(0) @db.Decimal(18, 3)
-  minimumStock    Decimal    @default(0) @db.Decimal(18, 3)
-  gstRate         Decimal    @default(18) @db.Decimal(5, 2)
-  hsnSac          String?
-  discountPercent Decimal    @default(0) @db.Decimal(5, 2)
-  supplierId      String?
-  imageUrl        String?
-  trackBatch      Boolean    @default(false)
-  trackSerial     Boolean    @default(false)
-  trackExpiry     Boolean    @default(false)
-  status          ItemStatus @default(ACTIVE)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  deletedAt       DateTime?
-  sourceStoreCode String?
-  challanItems DeliveryChallanItem[]
-  brand        Brand?                @relation(fields: [brandId], references: [id])
-  business     Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  category     ItemCategory?         @relation(fields: [categoryId], references: [id])
-  supplier     Supplier?             @relation(fields: [supplierId], references: [id])
-  unit         Unit?                 @relation(fields: [unitId], references: [id])
-
-  purchaseItems       PurchaseItem[]
-  purchaseReturnItems PurchaseReturnItem[]
-  quotationItems      QuotationItem[]
-  saleItems           SaleItem[]
-  saleReturnItems     SaleReturnItem[]
-  stockAdjustments    StockAdjustment[]
-  inventoryUnits      InventoryUnit[]
-  stockMovements      StockMovement[]
-  shelfStocks         ShelfStock[]
-  shelfMovements      ShelfMovement[]
+  id                     String                @id @default(uuid())
+  businessId             String
+  name                   String
+  modelName              String?
+  sku                    String?
+  barcode                String?
+  imei                   String?
+  deviceCode             String?
+  categoryId             String?
+  brandId                String?
+  unitId                 String?
+  description            String?
+  purchasePrice          Decimal               @default(0) @db.Decimal(18, 2)
+  salePrice              Decimal               @default(0) @db.Decimal(18, 2)
+  mrp                    Decimal?              @db.Decimal(18, 2)
+  openingStock           Decimal               @default(0) @db.Decimal(18, 3)
+  currentStock           Decimal               @default(0) @db.Decimal(18, 3)
+  minimumStock           Decimal               @default(0) @db.Decimal(18, 3)
+  gstRate                Decimal               @default(18) @db.Decimal(5, 2)
+  hsnSac                 String?
+  discountPercent        Decimal               @default(0) @db.Decimal(5, 2)
+  supplierId             String?
+  imageUrl               String?
+  trackBatch             Boolean               @default(false)
+  trackSerial            Boolean               @default(false)
+  trackExpiry            Boolean               @default(false)
+  status                 ItemStatus            @default(ACTIVE)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  deletedAt              DateTime?
+  sourceStoreCode        String?
+  challanItems           DeliveryChallanItem[]
+  brand                  Brand?                @relation(fields: [brandId], references: [id])
+  business               Business              @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category               ItemCategory?         @relation(fields: [categoryId], references: [id])
+  supplier               Supplier?             @relation(fields: [supplierId], references: [id])
+  unit                   Unit?                 @relation(fields: [unitId], references: [id])
+  transfersAsSource      StockTransferItem[]   @relation("TransferSourceItem")
+  transfersAsDestination StockTransferItem[]   @relation("TransferDestinationItem")
+  purchaseItems          PurchaseItem[]
+  purchaseReturnItems    PurchaseReturnItem[]
+  quotationItems         QuotationItem[]
+  saleItems              SaleItem[]
+  saleReturnItems        SaleReturnItem[]
+  stockAdjustments       StockAdjustment[]
+  inventoryUnits         InventoryUnit[]
+  stockMovements         StockMovement[]
+  shelfStocks            ShelfStock[]
+  shelfMovements         ShelfMovement[]
 
   @@unique([businessId, sku])
   @@unique([businessId, barcode])
@@ -530,9 +534,63 @@ model StockAdjustment {
   @@map("stock_adjustments")
 }
 
+model StockTransfer {
+  id             String              @id @default(uuid())
+  fromBusinessId String
+  toBusinessId   String
+  transferNumber String
+  status         StockTransferStatus @default(COMPLETED)
+  notes          String?
+  createdById    String?
+  createdAt      DateTime            @default(now())
+  receivedAt     DateTime            @default(now())
+
+  fromBusiness Business            @relation("TransferFrom", fields: [fromBusinessId], references: [id], onDelete: Restrict)
+  toBusiness   Business            @relation("TransferTo", fields: [toBusinessId], references: [id], onDelete: Restrict)
+  items        StockTransferItem[]
+
+  @@unique([fromBusinessId, transferNumber])
+  @@index([fromBusinessId, createdAt])
+  @@index([toBusinessId, createdAt])
+  @@index([status])
+  @@map("stock_transfers")
+}
+
+model StockTransferItem {
+  id                String   @id @default(uuid())
+  transferId        String
+  sourceItemId      String
+  destinationItemId String
+  quantity          Decimal  @db.Decimal(18, 3)
+  inventoryUnitIds  String[] @default([])
+  createdAt         DateTime @default(now())
+
+  transfer        StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  sourceItem      Item          @relation("TransferSourceItem", fields: [sourceItemId], references: [id], onDelete: Restrict)
+  destinationItem Item          @relation("TransferDestinationItem", fields: [destinationItemId], references: [id], onDelete: Restrict)
+
+  @@index([transferId])
+  @@index([sourceItemId])
+  @@index([destinationItemId])
+  @@map("stock_transfer_items")
+}
+
 model Sale {
-  id             String                @id @default(uuid())
-  businessId     String
+  id                 String  @id @default(uuid())
+  businessId         String
+  sellerStoreCode    String?
+  sellerBusinessName String?
+  sellerOwnerName    String?
+  sellerPhone        String?
+  sellerEmail        String?
+  sellerGstin        String?
+  sellerAddress      String?
+  sellerCity         String?
+  sellerState        String?
+  sellerPinCode      String?
+  sellerCountry      String?
+  sellerLogoUrl      String?
+
   invoiceNumber  String
   customerId     String?
   date           DateTime              @default(now())
@@ -1165,4 +1223,10 @@ enum InventoryUnitStatus {
   RETURNED
   DAMAGED
   LOST
+}
+
+enum StockTransferStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
 }

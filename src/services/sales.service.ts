@@ -171,9 +171,21 @@ export async function createSale(businessId: string, input: CreateSaleInput) {
       id: businessId,
       deletedAt: null,
     },
+
     select: {
       id: true,
+      storeCode: true,
+      name: true,
+      ownerName: true,
+      phone: true,
+      email: true,
+      gstin: true,
+      address: true,
+      city: true,
       state: true,
+      pinCode: true,
+      country: true,
+      logoUrl: true,
     },
   });
 
@@ -561,6 +573,19 @@ export async function createSale(businessId: string, input: CreateSaleInput) {
       const created = await tx.sale.create({
         data: {
           businessId,
+
+          sellerStoreCode: business.storeCode,
+          sellerBusinessName: business.name,
+          sellerOwnerName: business.ownerName,
+          sellerPhone: business.phone,
+          sellerEmail: business.email,
+          sellerGstin: business.gstin,
+          sellerAddress: business.address,
+          sellerCity: business.city,
+          sellerState: business.state,
+          sellerPinCode: business.pinCode,
+          sellerCountry: business.country,
+          sellerLogoUrl: business.logoUrl,
 
           invoiceNumber,
 
@@ -1378,15 +1403,14 @@ export async function cancelSale(
            RESTORE SHELF STOCK
         =============================================== */
 
-        const saleShelfMovements =
-          await tx.shelfMovement.findMany({
-            where: {
-              businessId,
-              referenceType: 'sale',
-              referenceId: sale.id,
-              movementType: 'SALE',
-            },
-          });
+        const saleShelfMovements = await tx.shelfMovement.findMany({
+          where: {
+            businessId,
+            referenceType: "sale",
+            referenceId: sale.id,
+            movementType: "SALE",
+          },
+        });
 
         for (const movement of saleShelfMovements) {
           if (!movement.fromShelfId) {
@@ -1419,10 +1443,10 @@ export async function cancelSale(
               itemId: movement.itemId,
               toShelfId: movement.fromShelfId,
               quantity: movement.quantity,
-              movementType: 'SALE_CANCEL',
-              referenceType: 'sale_cancel',
+              movementType: "SALE_CANCEL",
+              referenceType: "sale_cancel",
               referenceId: sale.id,
-              reason: 'Shelf stock restored after sale cancellation',
+              reason: "Shelf stock restored after sale cancellation",
               createdById: userId ?? null,
             },
           });
@@ -1549,7 +1573,6 @@ export async function cancelSale(
    Keeps the same sale ID and invoice number.
 ========================================================= */
 
-
 export async function updateSale(
   businessId: string,
   id: string,
@@ -1592,10 +1615,7 @@ export async function updateSale(
       }
 
       if (sale.status === "CANCELLED") {
-        throw new AppError(
-          "A cancelled invoice cannot be edited.",
-          400,
-        );
+        throw new AppError("A cancelled invoice cannot be edited.", 400);
       }
 
       if (sale.returns.length > 0) {
@@ -1615,9 +1635,7 @@ export async function updateSale(
         input.paidAmount ?? recordedPaidAmount,
       );
 
-      if (
-        Math.abs(requestedPaidAmount - recordedPaidAmount) > 0.005
-      ) {
+      if (Math.abs(requestedPaidAmount - recordedPaidAmount) > 0.005) {
         throw new AppError(
           "The recorded payment amount cannot be changed while editing an invoice. Use the Payments section to reconcile payments.",
           409,
@@ -1686,9 +1704,8 @@ export async function updateSale(
 
       const isInterState = Boolean(
         business.state &&
-          customerState &&
-          business.state.toLowerCase() !==
-            customerState.toLowerCase(),
+        customerState &&
+        business.state.toLowerCase() !== customerState.toLowerCase(),
       );
 
       const itemIds = Array.from(
@@ -1720,9 +1737,7 @@ export async function updateSale(
             })
           : [];
 
-      const itemMap = new Map(
-        dbItems.map((item) => [item.id, item]),
-      );
+      const itemMap = new Map(dbItems.map((item) => [item.id, item]));
 
       const oldQuantities = new Map<string, Decimal>();
       for (const line of sale.items) {
@@ -1742,38 +1757,24 @@ export async function updateSale(
       const calculatedLines: CalculatedSaleLine[] = [];
 
       for (const line of input.items) {
-        if (
-          !Number.isFinite(line.quantity) ||
-          line.quantity <= 0
-        ) {
-          throw new AppError(
-            `Invalid quantity for "${line.itemName}"`,
-            400,
-          );
+        if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
+          throw new AppError(`Invalid quantity for "${line.itemName}"`, 400);
         }
 
         if (!Number.isFinite(line.rate) || line.rate < 0) {
-          throw new AppError(
-            `Invalid rate for "${line.itemName}"`,
-            400,
-          );
+          throw new AppError(`Invalid rate for "${line.itemName}"`, 400);
         }
 
         const unitIds = validateInventoryUnitIds(line);
         assertSerializedQuantity(line, unitIds);
 
-        let dbItem:
-          | (typeof dbItems)[number]
-          | undefined;
+        let dbItem: (typeof dbItems)[number] | undefined;
 
         if (line.itemId) {
           dbItem = itemMap.get(line.itemId);
 
           if (!dbItem) {
-            throw new AppError(
-              `Item not found: ${line.itemName}`,
-              404,
-            );
+            throw new AppError(`Item not found: ${line.itemName}`, 404);
           }
 
           if (dbItem.trackSerial && unitIds.length !== line.quantity) {
@@ -1860,11 +1861,7 @@ export async function updateSale(
        */
       const oldUnitIds = new Set(
         sale.inventoryUnits
-          .filter(
-            (unit) =>
-              unit.saleId === sale.id &&
-              unit.status === "SOLD",
-          )
+          .filter((unit) => unit.saleId === sale.id && unit.status === "SOLD")
           .map((unit) => unit.id),
       );
 
@@ -2027,43 +2024,42 @@ export async function updateSale(
        * After restoring the old stock, validate the requested
        * quantities against the now-current stock.
        */
-  if (sale.status !== "DRAFT") {
-  for (const [itemId, requestedQty] of newQuantities) {
-    const item = await tx.item.findFirst({
-      where: {
-        id: itemId,
-        businessId,
-        deletedAt: null,
-        status: "ACTIVE",
-      },
-      select: {
-        id: true,
-        name: true,
-        currentStock: true,
-      },
-    });
+      if (sale.status !== "DRAFT") {
+        for (const [itemId, requestedQty] of newQuantities) {
+          const item = await tx.item.findFirst({
+            where: {
+              id: itemId,
+              businessId,
+              deletedAt: null,
+              status: "ACTIVE",
+            },
+            select: {
+              id: true,
+              name: true,
+              currentStock: true,
+            },
+          });
 
-    if (!item) {
-      throw new AppError("Item not found or inactive.", 404);
-    }
+          if (!item) {
+            throw new AppError("Item not found or inactive.", 404);
+          }
 
-    // The existing invoice already consumed this quantity.
-    // Add it back when calculating stock available for this edit.
-    const previouslySoldQty =
-      oldQuantities.get(itemId) ?? toDecimal(0);
+          // The existing invoice already consumed this quantity.
+          // Add it back when calculating stock available for this edit.
+          const previouslySoldQty = oldQuantities.get(itemId) ?? toDecimal(0);
 
-    const availableForThisEdit = toDecimal(item.currentStock).plus(
-      previouslySoldQty,
-    );
+          const availableForThisEdit = toDecimal(item.currentStock).plus(
+            previouslySoldQty,
+          );
 
-    if (availableForThisEdit.lessThan(requestedQty)) {
-      throw new AppError(
-        `Insufficient stock for "${item.name}". Available for this edit: ${availableForThisEdit.toString()}, Requested: ${requestedQty.toString()}`,
-        409,
-      );
-    }
-  }
-}
+          if (availableForThisEdit.lessThan(requestedQty)) {
+            throw new AppError(
+              `Insufficient stock for "${item.name}". Available for this edit: ${availableForThisEdit.toString()}, Requested: ${requestedQty.toString()}`,
+              409,
+            );
+          }
+        }
+      }
 
       const totals = calculateInvoiceTotals(calculatedLines);
       const paidAmount = toDecimal(recordedPaidAmount);
@@ -2075,9 +2071,7 @@ export async function updateSale(
         );
       }
 
-      const balanceAmount = roundMoney(
-        totals.grandTotal.minus(paidAmount),
-      );
+      const balanceAmount = roundMoney(totals.grandTotal.minus(paidAmount));
 
       let nextStatus = sale.status;
       if (sale.status !== "DRAFT") {
@@ -2099,15 +2093,9 @@ export async function updateSale(
         data: {
           customerId: input.customerId || null,
           date: input.date || sale.date,
-          dueDate:
-            input.dueDate === undefined
-              ? sale.dueDate
-              : input.dueDate,
+          dueDate: input.dueDate === undefined ? sale.dueDate : input.dueDate,
           status: nextStatus as any,
-          placeOfSupply:
-            input.placeOfSupply ||
-            customerState ||
-            business.state,
+          placeOfSupply: input.placeOfSupply || customerState || business.state,
           isInterState,
           subtotal: totals.subtotal as any,
           discountAmount: totals.discountAmount as any,
