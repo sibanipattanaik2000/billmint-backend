@@ -311,8 +311,7 @@ export async function createItem(
        * the user a nicer error before attempting the insert.
        */
 
-
-            const sourceStoreCode =
+      const sourceStoreCode =
         normalizeOptionalString(data.sourceStoreCode)?.toUpperCase() || null;
 
       if (sourceStoreCode) {
@@ -520,7 +519,26 @@ export async function updateItem(
     data.trackSerial !== undefined
       ? Boolean(data.trackSerial)
       : existing.trackSerial;
+  const sourceStoreCode =
+    data.sourceStoreCode !== undefined
+      ? (normalizeOptionalString(data.sourceStoreCode)?.toUpperCase() ?? null)
+      : existing.sourceStoreCode;
 
+  if (sourceStoreCode) {
+    const sourceStore = await prisma.business.findFirst({
+      where: {
+        storeCode: sourceStoreCode,
+        deletedAt: null,
+      },
+      select: {
+        storeCode: true,
+      },
+    });
+
+    if (!sourceStore) {
+      throw new AppError("Source Store Code does not exist", 400);
+    }
+  }
   if (trackSerial) {
     validateImei(imei);
   }
@@ -597,7 +615,7 @@ export async function updateItem(
 
         data: {
           name: data.name !== undefined ? data.name.trim() : existing.name,
-
+          sourceStoreCode,
           sku,
           barcode,
           imei,

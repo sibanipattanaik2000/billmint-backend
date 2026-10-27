@@ -407,29 +407,51 @@ router.get(
 
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
-    const skip = (page - 1) * limit;
 
     const storeCode =
       typeof req.query.storeCode === "string"
         ? req.query.storeCode.trim().toUpperCase()
         : undefined;
 
+    const parseStoreSalesDate = (
+      value: string,
+      endOfDay = false,
+    ): Date => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new AppError("Dates must use YYYY-MM-DD format", 400);
+      }
+
+      const parsed = new Date(
+        `${value}T${
+          endOfDay ? "23:59:59.999" : "00:00:00.000"
+        }Z`,
+      );
+
+      if (
+        Number.isNaN(parsed.getTime()) ||
+        parsed.toISOString().slice(0, 10) !== value
+      ) {
+        throw new AppError("Invalid date filter", 400);
+      }
+
+      return parsed;
+    };
+
     const from =
-      typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
+      typeof req.query.from === "string"
+        ? parseStoreSalesDate(req.query.from)
+        : undefined;
 
     const to =
-      typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
-
-    if (from && Number.isNaN(from.getTime())) {
-      throw new AppError("Invalid from date", 400);
-    }
-
-    if (to && Number.isNaN(to.getTime())) {
-      throw new AppError("Invalid to date", 400);
-    }
+      typeof req.query.to === "string"
+        ? parseStoreSalesDate(req.query.to, true)
+        : undefined;
 
     if (from && to && from > to) {
-      throw new AppError("The from date cannot be after the to date", 400);
+      throw new AppError(
+        "The from date cannot be after the to date",
+        400,
+      );
     }
 
     const where: any = {
@@ -437,44 +459,31 @@ router.get(
       status: { not: "CANCELLED" },
       business: {
         deletedAt: null,
+        ...(storeCode ? { storeCode } : {}),
       },
+      ...(from || to
+        ? {
+            date: {
+              ...(from ? { gte: from } : {}),
+              ...(to ? { lte: to } : {}),
+            },
+          }
+        : {}),
     };
 
-    if (from || to) {
-      where.date = {
-        ...(from ? { gte: from } : {}),
-        ...(to ? { lte: to } : {}),
-      };
-    }
-
-    if (storeCode) {
-      where.business.storeCode = storeCode;
-    }
-
-    const [sales, total, summary] = await Promise.all([
-      prisma.sale.findMany({
+    const [storeTotals, overallTotals] = await Promise.all([
+      prisma.sale.groupBy({
+        by: ["businessId"],
         where,
-        select: {
-          id: true,
-          invoiceNumber: true,
-          date: true,
+        _count: {
+          _all: true,
+        },
+        _sum: {
           grandTotal: true,
           paidAmount: true,
           balanceAmount: true,
-          status: true,
-          business: {
-            select: {
-              storeCode: true,
-              name: true,
-            },
-          },
         },
-        orderBy: [{ date: "desc" }, { id: "desc" }],
-        skip,
-        take: limit,
       }),
-
-      prisma.sale.count({ where }),
 
       prisma.sale.aggregate({
         where,
@@ -483,27 +492,61 @@ router.get(
           paidAmount: true,
           balanceAmount: true,
         },
-        _count: true,
+        _count: {
+          _all: true,
+        },
       }),
     ]);
 
+    const businesses = await prisma.business.findMany({
+      where: {
+        id: {
+          in: storeTotals.map((entry) => entry.businessId),
+        },
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        storeCode: true,
+        name: true,
+      },
+    });
+
+    const businessById = new Map(
+      businesses.map((business) => [business.id, business]),
+    );
+
+    const allStoreSummaries = storeTotals
+      .map((entry) => {
+        const business = businessById.get(entry.businessId);
+
+        if (!business) {
+          return null;
+        }
+
+        return {
+          storeCode: business.storeCode,
+          storeName: business.name,
+          invoiceCount: entry._count._all,
+          totalSales: entry._sum.grandTotal ?? 0,
+          totalReceived: entry._sum.paidAmount ?? 0,
+          totalOutstanding: entry._sum.balanceAmount ?? 0,
+        };
+      })
+      .filter((entry) => entry !== null)
+      .sort((a, b) => a.storeCode.localeCompare(b.storeCode));
+
+    const total = allStoreSummaries.length;
+    const skip = (page - 1) * limit;
+
     res.json({
       success: true,
-      data: sales.map((sale) => ({
-        invoiceNumber: sale.invoiceNumber,
-        date: sale.date,
-        storeCode: sale.business.storeCode,
-        storeName: sale.business.name,
-        amount: sale.grandTotal,
-        paidAmount: sale.paidAmount,
-        balanceAmount: sale.balanceAmount,
-        status: sale.status,
-      })),
+      data: allStoreSummaries.slice(skip, skip + limit),
       summary: {
-        invoiceCount: summary._count,
-        totalSales: summary._sum.grandTotal ?? 0,
-        totalReceived: summary._sum.paidAmount ?? 0,
-        totalOutstanding: summary._sum.balanceAmount ?? 0,
+        invoiceCount: overallTotals._count._all,
+        totalSales: overallTotals._sum.grandTotal ?? 0,
+        totalReceived: overallTotals._sum.paidAmount ?? 0,
+        totalOutstanding: overallTotals._sum.balanceAmount ?? 0,
       },
       pagination: {
         page,
@@ -528,18 +571,37 @@ router.get(
     const status =
       typeof req.query.status === "string" ? req.query.status : undefined;
 
+    const parseStoreSalesDate = (value: string, endOfDay = false): Date => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new AppError("Dates must use YYYY-MM-DD format", 400);
+      }
+
+      const parsed = new Date(
+        `${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`,
+      );
+
+      if (
+        Number.isNaN(parsed.getTime()) ||
+        parsed.toISOString().slice(0, 10) !== value
+      ) {
+        throw new AppError("Invalid date filter", 400);
+      }
+
+      return parsed;
+    };
+
     const from =
-      typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
+      typeof req.query.from === "string"
+        ? parseStoreSalesDate(req.query.from)
+        : undefined;
 
     const to =
-      typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
+      typeof req.query.to === "string"
+        ? parseStoreSalesDate(req.query.to, true)
+        : undefined;
 
-    if (from && Number.isNaN(from.getTime())) {
-      throw new Error("Invalid from date");
-    }
-
-    if (to && Number.isNaN(to.getTime())) {
-      throw new Error("Invalid to date");
+    if (from && to && from > to) {
+      throw new AppError("The from date cannot be after the to date", 400);
     }
 
     const data = await salesService.getSales(req.businessId!, {
