@@ -393,6 +393,129 @@ router.post(
 );
 
 /* =========================================================
+   ALL-STORE SALES OVERVIEW
+   Authenticated users can view sales summaries across stores.
+   This endpoint does not expose customer details or allow
+   cross-store invoice access or modification.
+========================================================= */
+
+router.get(
+  "/sales/all-stores",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const query = paginationSchema.parse(req.query);
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const storeCode =
+      typeof req.query.storeCode === "string"
+        ? req.query.storeCode.trim().toUpperCase()
+        : undefined;
+
+    const from =
+      typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
+
+    const to =
+      typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
+
+    if (from && Number.isNaN(from.getTime())) {
+      throw new AppError("Invalid from date", 400);
+    }
+
+    if (to && Number.isNaN(to.getTime())) {
+      throw new AppError("Invalid to date", 400);
+    }
+
+    if (from && to && from > to) {
+      throw new AppError("The from date cannot be after the to date", 400);
+    }
+
+    const where: any = {
+      deletedAt: null,
+      status: { not: "CANCELLED" },
+      business: {
+        deletedAt: null,
+      },
+    };
+
+    if (from || to) {
+      where.date = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      };
+    }
+
+    if (storeCode) {
+      where.business.storeCode = storeCode;
+    }
+
+    const [sales, total, summary] = await Promise.all([
+      prisma.sale.findMany({
+        where,
+        select: {
+          id: true,
+          invoiceNumber: true,
+          date: true,
+          grandTotal: true,
+          paidAmount: true,
+          balanceAmount: true,
+          status: true,
+          business: {
+            select: {
+              storeCode: true,
+              name: true,
+            },
+          },
+        },
+        orderBy: [{ date: "desc" }, { id: "desc" }],
+        skip,
+        take: limit,
+      }),
+
+      prisma.sale.count({ where }),
+
+      prisma.sale.aggregate({
+        where,
+        _sum: {
+          grandTotal: true,
+          paidAmount: true,
+          balanceAmount: true,
+        },
+        _count: true,
+      }),
+    ]);
+
+    res.json({
+      success: true,
+      data: sales.map((sale) => ({
+        invoiceNumber: sale.invoiceNumber,
+        date: sale.date,
+        storeCode: sale.business.storeCode,
+        storeName: sale.business.name,
+        amount: sale.grandTotal,
+        paidAmount: sale.paidAmount,
+        balanceAmount: sale.balanceAmount,
+        status: sale.status,
+      })),
+      summary: {
+        invoiceCount: summary._count,
+        totalSales: summary._sum.grandTotal ?? 0,
+        totalReceived: summary._sum.paidAmount ?? 0,
+        totalOutstanding: summary._sum.balanceAmount ?? 0,
+      },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  }),
+);
+
+/* =========================================================
    SALES
 ========================================================= */
 
@@ -472,11 +595,7 @@ router.put(
     const id = String(req.params.id);
     const body = saleSchema.parse(req.body);
 
-    const data = await salesService.updateSale(
-      req.businessId!,
-      id,
-      body,
-    );
+    const data = await salesService.updateSale(req.businessId!, id, body);
 
     res.json({
       success: true,
@@ -491,10 +610,7 @@ router.delete(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
-    const data = await salesService.deleteSale(
-      req.businessId!,
-      id,
-    );
+    const data = await salesService.deleteSale(req.businessId!, id);
 
     res.json({
       success: true,

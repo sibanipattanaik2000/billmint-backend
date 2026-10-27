@@ -313,6 +313,7 @@ export async function registerBusiness(data: {
     business: {
       id: result.business.id,
       name: result.business.name,
+      storeCode: result.business.storeCode,
       setupCompleted: result.business.setupCompleted,
     },
   };
@@ -420,7 +421,7 @@ export async function loginUser(
       setupCompleted: membership.business.setupCompleted,
       state: membership.business.state,
       gstin: membership.business.gstin,
-      storeCode: true,
+      storeCode: membership.business.storeCode,
     },
     role: membership.role.name,
     isOwner: membership.isOwner,
@@ -466,6 +467,7 @@ export async function getMe(userId: string, businessId: string) {
           logoUrl: true,
           setupCompleted: true,
           businessType: true,
+          storeCode: true,
         },
       },
     },

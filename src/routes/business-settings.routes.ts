@@ -20,17 +20,17 @@ const businessSchema = z
     city: nullableText(100),
     state: nullableText(100),
     financialYearStart: z.number().int().min(1).max(12).optional(),
-    storeCode: z
-      .string()
-      .trim()
-      .min(3, "Store Code must be at least 3 characters")
-      .max(20)
-      .regex(
-        /^[A-Za-z0-9_-]+$/,
-        "Use only letters, numbers, hyphens or underscores",
-      )
-      .transform((value) => value.toUpperCase())
-      .optional(),
+    // storeCode: z
+    //   .string()
+    //   .trim()
+    //   .min(3, "Store Code must be at least 3 characters")
+    //   .max(20)
+    //   .regex(
+    //     /^[A-Za-z0-9_-]+$/,
+    //     "Use only letters, numbers, hyphens or underscores",
+    //   )
+    //   .transform((value) => value.toUpperCase())
+    //   .optional(),
   })
   .strict();
 
@@ -167,23 +167,23 @@ router.patch(
 
     const businessId = req.businessId!;
     const { business: businessInput, settings: settingsInput } = parsed.data;
-    if (businessInput?.storeCode) {
-      const existingStore = await prisma.business.findFirst({
-        where: {
-          storeCode: businessInput.storeCode,
-          id: { not: businessId },
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
+    // if (businessInput?.storeCode) {
+    //   const existingStore = await prisma.business.findFirst({
+    //     where: {
+    //       storeCode: businessInput.storeCode,
+    //       id: { not: businessId },
+    //       deletedAt: null,
+    //     },
+    //     select: { id: true },
+    //   });
 
-      if (existingStore) {
-        throw new AppError(
-          "That Store Code is already in use. Please choose another.",
-          409,
-        );
-      }
-    }
+    //   if (existingStore) {
+    //     throw new AppError(
+    //       "That Store Code is already in use. Please choose another.",
+    //       409,
+    //     );
+    //   }
+    // }
     const result = await prisma.$transaction(async (tx) => {
       if (businessInput) {
         const existingBusiness = await tx.business.findFirst({
