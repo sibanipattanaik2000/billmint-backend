@@ -156,6 +156,7 @@ model Business {
   shelfStocks        ShelfStock[]
   shelfMovements     ShelfMovement[]
   storeCode          String            @unique @default(dbgenerated())
+  sourceCodePrefix   String?
   transfersSent      StockTransfer[]   @relation("TransferFrom")
   transfersReceived  StockTransfer[]   @relation("TransferTo")
 

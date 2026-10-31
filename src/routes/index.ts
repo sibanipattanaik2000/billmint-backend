@@ -29,6 +29,7 @@ import cashBankStatementRoutes from "./cash-bank-statement.routes";
 import businessSettingsRoutes from "./business-settings.routes";
 import shelvesRoutes from "./shelves.routes";
 import * as stockTransfersService from "../services/stock-transfers.service";
+import businessAccessRoutes from "./business-access.routes";
 import {
   customerSchema,
   itemSchema,
@@ -46,6 +47,7 @@ function serializeBigInt<T>(value: T): T {
   ) as T;
 }
 router.use("/auth", authRoutes);
+router.use("/business-access", businessAccessRoutes);
 router.use("/purchases", purchasesRoutes);
 router.use("/purchase-returns", purchaseReturnsRoutes);
 router.use("/suppliers", suppliersRoutes);

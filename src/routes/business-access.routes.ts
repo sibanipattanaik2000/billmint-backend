@@ -1,0 +1,614 @@
+
+import { Router } from "express";
+import { z } from "zod";
+import prisma from "../utils/prisma";
+import { authenticate, AuthRequest } from "../middleware/auth";
+import { asyncHandler, AppError } from "../middleware/errorHandler";
+import { signToken, setAuthCookie } from "../utils/auth";
+const router = Router();
+
+const nullableText = (maxLength: number) =>
+  z.union([z.string().trim().max(maxLength), z.null()]).optional();
+
+const sourceCodePrefixSchema = z
+  .union([
+    z
+      .string()
+      .trim()
+      .min(2, "Source Code Prefix must contain at least 2 characters")
+      .max(20, "Source Code Prefix cannot exceed 20 characters")
+      .regex(
+        /^[A-Za-z0-9_-]+$/,
+        "Use only letters, numbers, hyphens or underscores in Source Code Prefix",
+      ),
+    z.null(),
+  ])
+  .optional()
+  .transform((value) =>
+    typeof value === "string" ? value.toUpperCase() : value,
+  );
+
+const businessSchema = z
+  .object({
+    name: z.string().trim().min(1).max(150).optional(),
+    ownerName: z.string().trim().min(1).max(150).optional(),
+    email: nullableText(254),
+    phone: nullableText(30),
+    gstin: nullableText(15),
+    address: nullableText(1000),
+    city: nullableText(100),
+    state: nullableText(100),
+    financialYearStart: z.number().int().min(1).max(12).optional(),
+    sourceCodePrefix: sourceCodePrefixSchema,
+  })
+  .strict();
+
+const settingsSchema = z
+  .object({
+    invoicePrefix: z.string().trim().min(1).max(20).optional(),
+    invoiceNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    quotationPrefix: z.string().trim().min(1).max(20).optional(),
+    quotationNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    challanPrefix: z.string().trim().min(1).max(20).optional(),
+    challanNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    purchasePrefix: z.string().trim().min(1).max(20).optional(),
+    purchaseNextNumber: z.number().int().min(1).max(2_000_000_000).optional(),
+    defaultTaxRate: z.number().min(0).max(100).optional(),
+    currency: z.enum(["INR", "USD"]).optional(),
+    currencySymbol: z.string().trim().min(1).max(5).optional(),
+    decimalPlaces: z.number().int().min(0).max(4).optional(),
+    termsAndConditions: nullableText(10000),
+    bankName: nullableText(150),
+    bankAccountNumber: nullableText(50),
+    bankIfsc: nullableText(20),
+    bankBranch: nullableText(150),
+    upiId: nullableText(150),
+    invoiceTemplate: z.enum(["standard", "thermal", "modern"]).optional(),
+  })
+  .strict();
+
+const updateSchema = z
+  .object({
+    business: businessSchema.optional(),
+    settings: settingsSchema.optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.business || value.settings), {
+    message: "Provide business fields or settings to update.",
+  });
+
+async function requireBusinessOwner(req: AuthRequest) {
+  if (!req.businessId || !req.user?.userId || !req.user?.memberId) {
+    throw new AppError("Authentication required", 401);
+  }
+
+  const member = await prisma.businessMember.findFirst({
+    where: {
+      id: req.user.memberId,
+      businessId: req.businessId,
+      userId: req.user.userId,
+      status: "ACTIVE",
+      isOwner: true,
+    },
+    select: { id: true },
+  });
+
+  if (!member) {
+    throw new AppError(
+      "Only the business owner can change business settings.",
+      403,
+    );
+  }
+}
+/* =========================================================
+   CREATE BUSINESS
+========================================================= */
+
+const createBusinessSchema = z
+  .object({
+    businessName: z.string().trim().min(1).max(150),
+    businessType: z.string().trim().max(100).optional(),
+    email: z.string().trim().max(254).optional(),
+    phone: z.string().trim().max(30).optional(),
+    address: z.string().trim().max(1000).optional(),
+    city: z.string().trim().max(100).optional(),
+    state: z.string().trim().max(100).optional(),
+    pinCode: z.string().trim().max(20).optional(),
+    country: z.string().trim().max(100).optional(),
+    gstin: z.string().trim().max(15).optional(),
+    pan: z.string().trim().max(10).optional(),
+  })
+  .strict();
+
+router.post(
+  "/",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = createBusinessSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
+
+    if (!req.user?.userId) {
+      throw new AppError("Authentication required.", 401);
+    }
+
+    const input = parsed.data;
+
+    const user = await prisma.user.findFirst({
+      where: {
+        id: req.user.userId,
+        status: "ACTIVE",
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+      },
+    });
+
+    if (!user) {
+      throw new AppError("User not found or inactive.", 401);
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Create the new business.
+      // Store Code is generated by the existing database default.
+      const business = await tx.business.create({
+        data: {
+          name: input.businessName,
+          ownerName: user.name,
+          businessType: input.businessType || null,
+          email: input.email || null,
+          phone: input.phone || null,
+          address: input.address || null,
+          city: input.city || null,
+          state: input.state || null,
+          pinCode: input.pinCode || null,
+          country: input.country || "India",
+          gstin: input.gstin || null,
+          pan: input.pan || null,
+        },
+      });
+
+      // 2. Reuse existing system permissions.
+      const permissions = await tx.permission.findMany({
+        select: {
+          id: true,
+        },
+      });
+
+      // 3. Create the Owner role.
+      const ownerRole = await tx.role.create({
+        data: {
+          businessId: business.id,
+          name: "Owner",
+          isSystem: true,
+          permissions: {
+            create: permissions.map((permission) => ({
+              permissionId: permission.id,
+            })),
+          },
+        },
+      });
+
+      // 4. Add the logged-in user as the new business owner.
+      const membership = await tx.businessMember.create({
+        data: {
+          businessId: business.id,
+          userId: user.id,
+          roleId: ownerRole.id,
+          isOwner: true,
+          status: "ACTIVE",
+        },
+      });
+
+      // 5. Create default business settings.
+      await tx.businessSettings.create({
+        data: {
+          businessId: business.id,
+        },
+      });
+
+      // 6. Create invoice numbering sequences.
+      await tx.invoiceSequence.createMany({
+        data: [
+          {
+            businessId: business.id,
+            type: "INVOICE",
+            prefix: "INV",
+            nextNumber: 1,
+          },
+          {
+            businessId: business.id,
+            type: "QUOTATION",
+            prefix: "QT",
+            nextNumber: 1,
+          },
+          {
+            businessId: business.id,
+            type: "CHALLAN",
+            prefix: "DC",
+            nextNumber: 1,
+          },
+          {
+            businessId: business.id,
+            type: "PURCHASE",
+            prefix: "PUR",
+            nextNumber: 1,
+          },
+        ],
+      });
+
+      return {
+        business,
+        membership,
+        role: ownerRole,
+      };
+    });
+
+    // 7. Switch the session to the newly created business.
+    const token = signToken({
+      userId: user.id,
+      businessId: result.business.id,
+      memberId: result.membership.id,
+      role: result.role.name,
+      isOwner: true,
+    });
+
+    setAuthCookie(res, token);
+
+    res.status(201).json({
+      success: true,
+      message: "Business created successfully.",
+      data: {
+        business: {
+          id: result.business.id,
+          name: result.business.name,
+          storeCode: result.business.storeCode,
+          setupCompleted: result.business.setupCompleted,
+          role: result.role.name,
+          isOwner: true,
+        },
+      },
+    });
+  }),
+);
+
+
+
+
+/* =========================================================
+   LIST ALL BUSINESSES FOR LOGGED-IN USER
+========================================================= */
+
+router.get(
+  "/list",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const userId = req.user!.userId;
+    const activeBusinessId = req.businessId;
+
+    const memberships = await prisma.businessMember.findMany({
+      where: {
+        userId,
+        status: "ACTIVE",
+        business: {
+          deletedAt: null,
+        },
+      },
+      include: {
+        business: {
+          select: {
+            id: true,
+            name: true,
+            storeCode: true,
+            city: true,
+            state: true,
+            gstin: true,
+            setupCompleted: true,
+          },
+        },
+        role: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        joinedAt: "asc",
+      },
+    });
+
+    const businesses = memberships.map((membership) => ({
+      membershipId: membership.id,
+      businessId: membership.business.id,
+      name: membership.business.name,
+      storeCode: membership.business.storeCode,
+      city: membership.business.city,
+      state: membership.business.state,
+      gstin: membership.business.gstin,
+      setupCompleted: membership.business.setupCompleted,
+      role: membership.role.name,
+      isOwner: membership.isOwner,
+      isActive: membership.business.id === activeBusinessId,
+    }));
+
+    res.json({
+      success: true,
+      data: businesses,
+    });
+  }),
+);
+
+
+
+/* =========================================================
+   SWITCH ACTIVE BUSINESS
+========================================================= */
+
+const switchBusinessSchema = z
+  .object({
+    businessId: z.string().uuid(),
+  })
+  .strict();
+
+router.post(
+  "/switch",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const parsed = switchBusinessSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
+
+    const userId = req.user!.userId;
+    const { businessId } = parsed.data;
+
+    // Only allow switching to a business where this user
+    // has an active membership.
+    const membership = await prisma.businessMember.findFirst({
+      where: {
+        userId,
+        businessId,
+        status: "ACTIVE",
+        business: {
+          deletedAt: null,
+        },
+      },
+      include: {
+        business: {
+          select: {
+            id: true,
+            name: true,
+            storeCode: true,
+            city: true,
+            state: true,
+            gstin: true,
+            setupCompleted: true,
+          },
+        },
+        role: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!membership) {
+      throw new AppError(
+        "You do not have access to this business.",
+        403,
+      );
+    }
+
+    // Issue a session for the selected business.
+    const token = signToken({
+      userId,
+      businessId: membership.businessId,
+      memberId: membership.id,
+      role: membership.role.name,
+      isOwner: membership.isOwner,
+    });
+
+    setAuthCookie(res, token);
+
+    res.json({
+      success: true,
+      message: "Business switched successfully.",
+      data: {
+        business: {
+          ...membership.business,
+          role: membership.role.name,
+          isOwner: membership.isOwner,
+        },
+      },
+    });
+  }),
+);
+
+router.get(
+  "/",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const businessId = req.businessId!;
+
+    const business = await prisma.business.findFirst({
+      where: {
+        id: businessId,
+        deletedAt: null,
+      },
+      include: {
+        settings: true,
+      },
+    });
+
+    if (!business) {
+      throw new AppError("Business not found.", 404);
+    }
+
+    let settings = business.settings;
+
+    if (!settings) {
+      settings = await prisma.businessSettings.upsert({
+        where: { businessId },
+        update: {},
+        create: { businessId },
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        business: {
+          id: business.id,
+          name: business.name,
+          ownerName: business.ownerName,
+          email: business.email,
+          phone: business.phone,
+          gstin: business.gstin,
+          pan: business.pan,
+          address: business.address,
+          city: business.city,
+          state: business.state,
+          pinCode: business.pinCode,
+          country: business.country,
+          financialYearStart: business.financialYearStart,
+          logoUrl: business.logoUrl,
+          signatureUrl: business.signatureUrl,
+          updatedAt: business.updatedAt,
+          storeCode: business.storeCode,
+          sourceCodePrefix: business.sourceCodePrefix,
+        },
+        settings,
+      },
+    });
+  }),
+);
+
+router.patch(
+  "/",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res) => {
+    await requireBusinessOwner(req);
+
+    const parsed = updateSchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
+    const businessId = req.businessId!;
+    const { business: businessInput, settings: settingsInput } = parsed.data;
+
+    if (businessInput?.sourceCodePrefix) {
+      const existingPrefix = await prisma.business.findFirst({
+        where: {
+          sourceCodePrefix: businessInput.sourceCodePrefix,
+          id: { not: businessId },
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          name: true,
+        },
+      });
+
+      if (existingPrefix) {
+        throw new AppError(
+          `Source Code Prefix "${businessInput.sourceCodePrefix}" is already assigned to another business.`,
+          409,
+        );
+      }
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      if (businessInput) {
+        const existingBusiness = await tx.business.findFirst({
+          where: {
+            id: businessId,
+            deletedAt: null,
+          },
+          select: { id: true },
+        });
+
+        if (!existingBusiness) {
+          throw new AppError("Business not found.", 404);
+        }
+
+        await tx.business.update({
+          where: { id: businessId },
+          data: businessInput,
+        });
+      }
+
+      if (settingsInput) {
+        await tx.businessSettings.upsert({
+          where: { businessId },
+          update: settingsInput,
+          create: {
+            businessId,
+            ...settingsInput,
+          },
+        });
+      }
+
+      const updatedBusiness = await tx.business.findFirst({
+        where: {
+          id: businessId,
+          deletedAt: null,
+        },
+        include: {
+          settings: true,
+        },
+      });
+
+      if (!updatedBusiness || !updatedBusiness.settings) {
+        throw new AppError("Unable to load saved business settings.", 500);
+      }
+
+      return {
+        business: {
+          id: updatedBusiness.id,
+          name: updatedBusiness.name,
+          ownerName: updatedBusiness.ownerName,
+          email: updatedBusiness.email,
+          phone: updatedBusiness.phone,
+          gstin: updatedBusiness.gstin,
+          pan: updatedBusiness.pan,
+          address: updatedBusiness.address,
+          city: updatedBusiness.city,
+          state: updatedBusiness.state,
+          pinCode: updatedBusiness.pinCode,
+          country: updatedBusiness.country,
+          financialYearStart: updatedBusiness.financialYearStart,
+          logoUrl: updatedBusiness.logoUrl,
+          signatureUrl: updatedBusiness.signatureUrl,
+          updatedAt: updatedBusiness.updatedAt,
+          storeCode: updatedBusiness.storeCode,
+          sourceCodePrefix: updatedBusiness.sourceCodePrefix,
+        },
+        settings: updatedBusiness.settings,
+      };
+    });
+
+    res.json({
+      success: true,
+      message: "Business settings saved successfully.",
+      data: result,
+    });
+  }),
+);
+
+export default router;
