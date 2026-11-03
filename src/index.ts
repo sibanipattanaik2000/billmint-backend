@@ -76,7 +76,7 @@ app.use(
       10,
     ),
     max: parseInt(
-      process.env.RATE_LIMIT_MAX || "100",
+      process.env.RATE_LIMIT_MAX || "2000",
       10,
     ),
     standardHeaders: true,
