@@ -1,17 +1,14 @@
-
 import { Router, type Response } from "express";
 import { z } from "zod";
 
 import {
   authenticate,
+  requireStoreRole,
   type AuthRequest,
 } from "../middleware/auth";
 import { asyncHandler } from "../middleware/errorHandler";
 import * as purchasesService from "../services/purchases.service";
-import {
-  paginationSchema,
-  purchaseSchema,
-} from "../validators/common";
+import { paginationSchema, purchaseSchema } from "../validators/common";
 
 const router = Router();
 
@@ -31,6 +28,7 @@ const createPurchaseSchema = purchaseSchema.extend({
 router.get(
   "/",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
 
@@ -40,14 +38,10 @@ router.get(
         : undefined;
 
     const from =
-      typeof req.query.from === "string"
-        ? new Date(req.query.from)
-        : undefined;
+      typeof req.query.from === "string" ? new Date(req.query.from) : undefined;
 
     const to =
-      typeof req.query.to === "string"
-        ? new Date(req.query.to)
-        : undefined;
+      typeof req.query.to === "string" ? new Date(req.query.to) : undefined;
 
     if (from && Number.isNaN(from.getTime())) {
       return res.status(400).json({
@@ -70,17 +64,14 @@ router.get(
       });
     }
 
-    const result = await purchasesService.getPurchases(
-      req.businessId!,
-      {
-        page: query.page,
-        limit: query.limit,
-        search: query.search,
-        status,
-        from,
-        to,
-      },
-    );
+    const result = await purchasesService.getPurchases(req.businessId!, {
+      page: query.page,
+      limit: query.limit,
+      search: query.search,
+      status,
+      from,
+      to,
+    });
 
     return res.status(200).json({
       success: true,
@@ -96,16 +87,14 @@ router.get(
 router.post(
   "/",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = createPurchaseSchema.parse(req.body);
 
-    const data = await purchasesService.createPurchase(
-      req.businessId!,
-      {
-        ...body,
-        createdById: req.user?.userId,
-      },
-    );
+    const data = await purchasesService.createPurchase(req.businessId!, {
+      ...body,
+      createdById: req.user?.userId,
+    });
 
     return res.status(201).json({
       success: true,
@@ -120,6 +109,7 @@ router.post(
 router.get(
   "/:id",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await purchasesService.getPurchaseById(
       req.businessId!,
@@ -139,6 +129,7 @@ router.get(
 router.post(
   "/:id/cancel",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await purchasesService.cancelPurchase(
       req.businessId!,

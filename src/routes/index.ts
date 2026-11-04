@@ -4,6 +4,7 @@ import authRoutes from "./auth.routes";
 import {
   authenticate,
   requirePermission,
+  requireStoreRole,
   AuthRequest,
 } from "../middleware/auth";
 import { asyncHandler, AppError } from "../middleware/errorHandler";
@@ -45,6 +46,39 @@ function serializeBigInt<T>(value: T): T {
       typeof item === "bigint" ? item.toString() : item,
     ),
   ) as T;
+}
+function redactBranchInventory<T>(value: T): T {
+  const hiddenFields = new Set([
+    "purchasePrice",
+    "supplierId",
+    "supplier",
+    "purchase",
+    "purchaseItem",
+    "purchaseId",
+    "purchaseItemId",
+    "costPrice",
+    "landedCost",
+  ]);
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactBranchInventory(entry)) as T;
+  }
+
+  if (value && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+
+    for (const [key, child] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
+      if (hiddenFields.has(key)) continue;
+
+      result[key] = redactBranchInventory(child);
+    }
+
+    return result as T;
+  }
+
+  return value;
 }
 router.use("/auth", authRoutes);
 router.use("/business-access", businessAccessRoutes);
@@ -198,9 +232,17 @@ router.get(
       lowStock,
     });
 
+    const business = await prisma.business.findUnique({
+      where: { id: req.businessId! },
+      select: { storeRole: true },
+    });
+
+    const responseData =
+      business?.storeRole === "CENTRAL" ? data : redactBranchInventory(data);
+
     res.json({
       success: true,
-      ...data,
+      ...responseData,
     });
   }),
 );
@@ -220,6 +262,7 @@ router.get(
 router.post(
   "/items/bulk",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const requestSchema = z.object({
       items: z.array(z.unknown()).min(1).max(500),
@@ -302,6 +345,7 @@ router.post(
 router.post(
   "/items",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = itemSchema.parse(req.body);
 
@@ -321,6 +365,7 @@ router.post(
 router.post(
   "/items/bulk-import",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const rows = z.array(itemSchema).min(1).max(500).parse(req.body);
 
@@ -442,9 +487,17 @@ router.get(
 
     const data = await itemsService.getItem(req.businessId!, id);
 
+    const business = await prisma.business.findUnique({
+      where: { id: req.businessId! },
+      select: { storeRole: true },
+    });
+
+    const responseData =
+      business?.storeRole === "CENTRAL" ? data : redactBranchInventory(data);
+
     res.json({
       success: true,
-      data,
+      data: responseData,
     });
   }),
 );
@@ -452,6 +505,7 @@ router.get(
 router.patch(
   "/items/:id",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
     const body = itemSchema.partial().parse(req.body);
@@ -473,6 +527,7 @@ router.patch(
 router.delete(
   "/items/:id",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
@@ -492,6 +547,7 @@ router.delete(
 router.post(
   "/items/:id/adjust-stock",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const id = String(req.params.id);
 
@@ -539,6 +595,7 @@ router.post(
 router.get(
   "/sales/all-stores",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
 
@@ -890,7 +947,7 @@ router.post(
         .array(
           z.object({
             itemId: z.string().uuid(),
-            quantity: z.coerce.number().finite().positive(),
+            inventoryUnitIds: z.array(z.string().uuid()).min(1).max(500),
           }),
         )
         .min(1)
@@ -914,6 +971,115 @@ router.post(
     );
 
     res.status(201).json({
+      success: true,
+      data: serializeBigInt(data),
+    });
+  }),
+);
+
+router.get(
+  "/stock-transfers/available-units",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await stockTransfersService.listTransferableInventoryUnits(
+      req.businessId!,
+    );
+
+    res.json({
+      success: true,
+      data: serializeBigInt(data),
+    });
+  }),
+);
+
+router.get(
+  "/stock-transfers",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = await stockTransfersService.listStockTransfers(
+      req.businessId!,
+    );
+
+    res.json({
+      success: true,
+      data: serializeBigInt(data),
+    });
+  }),
+);
+
+router.post(
+  "/stock-transfers",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const bodySchema = z.object({
+      toStoreCode: z.string().trim().min(1).max(20),
+      items: z
+        .array(
+          z.object({
+            itemId: z.string().uuid(),
+            inventoryUnitIds: z.array(z.string().uuid()).min(1).max(500),
+          }),
+        )
+        .min(1)
+        .max(100),
+      notes: z.string().trim().max(5000).optional().nullable(),
+    });
+
+    const parsed = bodySchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
+
+    const data = await stockTransfersService.createStockTransfer(
+      req.businessId!,
+      parsed.data,
+      req.user?.userId,
+    );
+
+    res.status(201).json({
+      success: true,
+      data: serializeBigInt(data),
+    });
+  }),
+);
+
+router.post(
+  "/stock-transfers/:id/receive",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const bodySchema = z.object({
+      units: z
+        .array(
+          z.object({
+            transferUnitId: z.string().uuid(),
+            barcode: z.string().trim().min(3).max(100),
+          }),
+        )
+        .min(1)
+        .max(500),
+    });
+
+    const parsed = bodySchema.safeParse(req.body);
+
+    if (!parsed.success) {
+      throw new AppError(
+        parsed.error.issues.map((issue) => issue.message).join(", "),
+        400,
+      );
+    }
+
+    const data = await stockTransfersService.receiveStockTransfer(
+      req.businessId!,
+      String(req.params.id),
+      parsed.data.units,
+      req.user?.userId,
+    );
+
+    res.json({
       success: true,
       data: serializeBigInt(data),
     });

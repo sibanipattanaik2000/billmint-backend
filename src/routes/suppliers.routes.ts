@@ -1,16 +1,13 @@
-
 import { Router, Response } from "express";
 
 import {
   authenticate,
+  requireStoreRole,
   AuthRequest,
 } from "../middleware/auth";
 import { asyncHandler } from "../middleware/errorHandler";
 import * as suppliersService from "../services/suppliers.service";
-import {
-  paginationSchema,
-  supplierSchema,
-} from "../validators/common";
+import { paginationSchema, supplierSchema } from "../validators/common";
 
 const router = Router();
 
@@ -23,6 +20,7 @@ const router = Router();
 router.get(
   "/",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const query = paginationSchema.parse(req.query);
 
@@ -31,26 +29,19 @@ router.get(
         ? req.query.status.trim().toUpperCase()
         : undefined;
 
-    if (
-      rawStatus &&
-      rawStatus !== "ACTIVE" &&
-      rawStatus !== "ARCHIVED"
-    ) {
+    if (rawStatus && rawStatus !== "ACTIVE" && rawStatus !== "ARCHIVED") {
       return res.status(400).json({
         success: false,
         message: "Status must be ACTIVE or ARCHIVED",
       });
     }
 
-    const result = await suppliersService.listSuppliers(
-      req.businessId!,
-      {
-        page: query.page,
-        limit: query.limit,
-        search: query.search,
-        status: rawStatus,
-      },
-    );
+    const result = await suppliersService.listSuppliers(req.businessId!, {
+      page: query.page,
+      limit: query.limit,
+      search: query.search,
+      status: rawStatus,
+    });
 
     return res.status(200).json({
       success: true,
@@ -68,6 +59,7 @@ router.get(
 router.post(
   "/",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const body = supplierSchema.parse(req.body);
 
@@ -90,6 +82,7 @@ router.post(
 router.get(
   "/:id",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const supplier = await suppliersService.getSupplier(
       req.businessId!,
@@ -112,10 +105,9 @@ router.get(
 router.patch(
   "/:id",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const schema = supplierSchema
-      .partial()
-      .omit({ openingBalance: true });
+    const schema = supplierSchema.partial().omit({ openingBalance: true });
 
     const body = schema.parse(req.body);
 
@@ -149,6 +141,7 @@ router.patch(
 router.delete(
   "/:id",
   authenticate,
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const result = await suppliersService.deleteSupplier(
       req.businessId!,

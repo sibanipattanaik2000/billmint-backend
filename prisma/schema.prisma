@@ -159,6 +159,7 @@ model Business {
   sourceCodePrefix   String?
   transfersSent      StockTransfer[]   @relation("TransferFrom")
   transfersReceived  StockTransfer[]   @relation("TransferTo")
+  storeRole          String            @default("BRANCH") @map("store_role")
 
   @@index([gstin])
   @@map("businesses")
@@ -390,19 +391,20 @@ model Item {
 }
 
 model InventoryUnit {
-  id           String  @id @default(uuid())
-  businessId   String
-  itemId       String
-  itemCode     String?
-  serialNumber String?
-  imei         String?
-
-  status InventoryUnitStatus @default(AVAILABLE)
-
-  purchaseId     String?
-  purchaseItemId String?
-  saleId         String?
-  saleItemId     String?
+  id              String              @id @default(uuid())
+  businessId      String
+  itemId          String
+  itemCode        String?
+  serialNumber    String?
+  imei            String?
+  barcode         String?
+  sourceCode      String?
+  status          InventoryUnitStatus @default(AVAILABLE)
+  transferHistory StockTransferUnit[]
+  purchaseId      String?
+  purchaseItemId  String?
+  saleId          String?
+  saleItemId      String?
 
   purchasePrice Decimal? @db.Decimal(18, 2)
   notes         String?
@@ -419,6 +421,7 @@ model InventoryUnit {
   sale         Sale?         @relation(fields: [saleId], references: [id])
   saleItem     SaleItem?     @relation(fields: [saleItemId], references: [id])
 
+  @@unique([businessId, barcode])
   @@unique([businessId, imei])
   @@unique([businessId, serialNumber])
   @@unique([businessId, itemCode])
@@ -540,11 +543,12 @@ model StockTransfer {
   fromBusinessId String
   toBusinessId   String
   transferNumber String
-  status         StockTransferStatus @default(COMPLETED)
+  status         StockTransferStatus @default(DISPATCHED)
   notes          String?
   createdById    String?
+  dispatchedAt   DateTime            @default(now())
   createdAt      DateTime            @default(now())
-  receivedAt     DateTime            @default(now())
+  receivedAt     DateTime?
 
   fromBusiness Business            @relation("TransferFrom", fields: [fromBusinessId], references: [id], onDelete: Restrict)
   toBusiness   Business            @relation("TransferTo", fields: [toBusinessId], references: [id], onDelete: Restrict)
@@ -566,14 +570,35 @@ model StockTransferItem {
   inventoryUnitIds  String[] @default([])
   createdAt         DateTime @default(now())
 
-  transfer        StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
-  sourceItem      Item          @relation("TransferSourceItem", fields: [sourceItemId], references: [id], onDelete: Restrict)
-  destinationItem Item          @relation("TransferDestinationItem", fields: [destinationItemId], references: [id], onDelete: Restrict)
+  transfer        StockTransfer       @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  sourceItem      Item                @relation("TransferSourceItem", fields: [sourceItemId], references: [id], onDelete: Restrict)
+  destinationItem Item                @relation("TransferDestinationItem", fields: [destinationItemId], references: [id], onDelete: Restrict)
+  transferUnits   StockTransferUnit[]
 
   @@index([transferId])
   @@index([sourceItemId])
   @@index([destinationItemId])
   @@map("stock_transfer_items")
+}
+
+model StockTransferUnit {
+  id              String             @id @default(uuid())
+  transferItemId  String
+  inventoryUnitId String
+  status          TransferUnitStatus @default(PENDING)
+  barcode         String?
+  receivedAt      DateTime?
+  receivedById    String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  transferItem  StockTransferItem @relation(fields: [transferItemId], references: [id], onDelete: Cascade)
+  inventoryUnit InventoryUnit     @relation(fields: [inventoryUnitId], references: [id], onDelete: Restrict)
+
+  @@unique([transferItemId, inventoryUnitId])
+  @@index([inventoryUnitId])
+  @@index([status])
+  @@map("stock_transfer_units")
 }
 
 model Sale {
@@ -1220,6 +1245,7 @@ enum ImportStatus {
 enum InventoryUnitStatus {
   AVAILABLE
   RESERVED
+  IN_TRANSIT
   SOLD
   RETURNED
   DAMAGED
@@ -1228,6 +1254,14 @@ enum InventoryUnitStatus {
 
 enum StockTransferStatus {
   DRAFT
+  DISPATCHED
+  PARTIALLY_RECEIVED
+  RECEIVED
   COMPLETED
   CANCELLED
+}
+
+enum TransferUnitStatus {
+  PENDING
+  RECEIVED
 }

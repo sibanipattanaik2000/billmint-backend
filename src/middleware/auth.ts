@@ -1,98 +1,209 @@
-import { Request, Response, NextFunction } from 'express';
-import { verifyToken, JwtPayload } from '../utils/auth';
-import prisma from '../utils/prisma';
+import { Request, Response, NextFunction } from "express";
+import { verifyToken, JwtPayload } from "../utils/auth";
+import prisma from "../utils/prisma";
 
 export interface AuthRequest extends Request {
   user?: JwtPayload;
   businessId?: string;
 }
 
-export async function authenticate(req: AuthRequest, res: Response, next: NextFunction) {
+export async function authenticate(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+) {
   try {
     let token: string | undefined;
 
-    // Prefer HTTP-only cookie
     if (req.cookies?.BillMint_token) {
       token = req.cookies.BillMint_token;
-    } else if (req.headers.authorization?.startsWith('Bearer ')) {
+    } else if (req.headers.authorization?.startsWith("Bearer ")) {
       token = req.headers.authorization.slice(7);
     }
 
     if (!token) {
-      return res.status(401).json({ success: false, message: 'Authentication required' });
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
     }
 
     const payload = verifyToken(token);
 
-    // Verify user still active
     const user = await prisma.user.findFirst({
-      where: { id: payload.userId, deletedAt: null, status: 'ACTIVE' },
+      where: {
+        id: payload.userId,
+        deletedAt: null,
+        status: "ACTIVE",
+      },
+      select: { id: true },
     });
 
     if (!user) {
-      return res.status(401).json({ success: false, message: 'User not found or inactive' });
+      return res.status(401).json({
+        success: false,
+        message: "User not found or inactive",
+      });
     }
 
-    // Verify membership
     const member = await prisma.businessMember.findFirst({
       where: {
         id: payload.memberId,
         userId: payload.userId,
         businessId: payload.businessId,
-        status: 'ACTIVE',
+        status: "ACTIVE",
+        business: {
+          deletedAt: null,
+        },
       },
+      select: { id: true },
     });
 
     if (!member) {
-      return res.status(401).json({ success: false, message: 'Business membership not found' });
+      return res.status(401).json({
+        success: false,
+        message: "Business membership not found",
+      });
     }
 
     req.user = payload;
     req.businessId = payload.businessId;
-    next();
-  } catch (err) {
-    return res.status(401).json({ success: false, message: 'Invalid or expired session' });
+
+    return next();
+  } catch {
+    return res.status(401).json({
+      success: false,
+      message: "Invalid or expired session",
+    });
   }
 }
 
+/**
+ * Enforces permissions from the active business role.
+ * Owner status alone is not permission to bypass sensitive checks.
+ */
 export function requirePermission(...codes: string[]) {
-  return async (req: AuthRequest, res: Response, next: NextFunction) => {
-    if (!req.user) {
-      return res.status(401).json({ success: false, message: 'Authentication required' });
-    }
-
-    // Owners bypass permission checks
-    if (req.user.isOwner) {
-      return next();
+  return async (
+    req: AuthRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    if (!req.user || !req.businessId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
     }
 
     try {
-      const role = await prisma.role.findFirst({
+      const membership = await prisma.businessMember.findFirst({
         where: {
-          businessId: req.user.businessId,
-          name: req.user.role,
+          id: req.user.memberId,
+          userId: req.user.userId,
+          businessId: req.businessId,
+          status: "ACTIVE",
         },
         include: {
-          permissions: {
-            include: { permission: true },
+          role: {
+            include: {
+              permissions: {
+                include: {
+                  permission: true,
+                },
+              },
+            },
           },
         },
       });
 
-      if (!role) {
-        return res.status(403).json({ success: false, message: 'Role not found' });
+      if (!membership) {
+        return res.status(403).json({
+          success: false,
+          message: "Active business membership required",
+        });
       }
 
-      const userPerms = new Set(role.permissions.map((rp) => rp.permission.code));
-      const hasAll = codes.every((c) => userPerms.has(c) || userPerms.has('*'));
+      const userPermissions = new Set(
+        membership.role.permissions.map(
+          (entry) => entry.permission.code,
+        ),
+      );
 
-      if (!hasAll) {
-        return res.status(403).json({ success: false, message: 'Insufficient permissions' });
+      const allowed = codes.every(
+        (code) =>
+          userPermissions.has(code) ||
+          userPermissions.has("*"),
+      );
+
+      if (!allowed) {
+        return res.status(403).json({
+          success: false,
+          message: "Insufficient permissions",
+        });
       }
 
-      next();
-    } catch {
-      return res.status(500).json({ success: false, message: 'Permission check failed' });
+      return next();
+    } catch (error) {
+      console.error("[AUTH] Permission check failed:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Permission check failed",
+      });
+    }
+  };
+}
+
+/**
+ * Store-level restriction. This is independent of role names
+ * and cannot be bypassed merely because a user is an owner.
+ */
+export function requireStoreRole(...allowedRoles: string[]) {
+  return async (
+    req: AuthRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    if (!req.businessId) {
+      return res.status(401).json({
+        success: false,
+        message: "Business context is missing",
+      });
+    }
+
+    try {
+      const business = await prisma.business.findFirst({
+        where: {
+          id: req.businessId,
+          deletedAt: null,
+        },
+        select: {
+          storeRole: true,
+        },
+      });
+
+      if (!business) {
+        return res.status(404).json({
+          success: false,
+          message: "Business not found",
+        });
+      }
+
+      if (!allowedRoles.includes(business.storeRole)) {
+        return res.status(403).json({
+          success: false,
+          message: "This operation is not permitted for this store",
+        });
+      }
+
+      return next();
+    } catch (error) {
+      console.error("[AUTH] Store-role check failed:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Store access check failed",
+      });
     }
   };
 }
