@@ -481,6 +481,207 @@ export async function createItem(
 }
 
 /* =========================================================
+   CREATE ITEM FROM EXCEL IMPORT — NO TRANSACTION
+========================================================= */
+
+export async function createImportedItem(
+  businessId: string,
+  data: any,
+  userId?: string,
+) {
+  if (typeof data.name !== "string" || !data.name.trim()) {
+    throw new AppError("Item name is required", 400);
+  }
+
+  const sku = normalizeOptionalString(data.sku);
+  const imei = normalizeOptionalString(data.imei);
+
+  if (!sku) {
+    throw new AppError("Item Code is required", 400);
+  }
+
+  validateImei(imei);
+
+  const openingStock = toDecimal(data.openingStock ?? 1);
+
+  if (openingStock.lt(0) || openingStock.gt(1)) {
+    throw new AppError(
+      "Each IMEI represents one device. Stock must be 1 or less.",
+      400,
+    );
+  }
+
+  const barcode = normalizeOptionalString(data.barcode);
+
+  const sourceStoreCode =
+    normalizeOptionalString(data.sourceStoreCode)?.toUpperCase() || null;
+
+  let created: any = null;
+
+  try {
+    if (sourceStoreCode) {
+      const sourceStore = await prisma.business.findFirst({
+        where: {
+          storeCode: sourceStoreCode,
+          deletedAt: null,
+        },
+        select: { storeCode: true },
+      });
+
+      if (!sourceStore) {
+        throw new AppError("Source Store Code does not exist", 400);
+      }
+    }
+
+    const existing = await prisma.item.findFirst({
+      where: {
+        businessId,
+        deletedAt: null,
+        OR: [
+          { sku },
+          { imei },
+          ...(barcode ? [{ barcode }] : []),
+        ],
+      },
+      select: {
+        sku: true,
+        imei: true,
+        barcode: true,
+      },
+    });
+
+    if (existing) {
+      if (existing.sku === sku) {
+        throw new AppError(`Item Code "${sku}" already exists`, 409);
+      }
+
+      if (existing.imei === imei) {
+        throw new AppError(`IMEI "${imei}" already exists`, 409);
+      }
+
+      if (barcode && existing.barcode === barcode) {
+        throw new AppError(`Barcode "${barcode}" already exists`, 409);
+      }
+
+      throw new AppError("Duplicate item identifier", 409);
+    }
+
+    // 1. Create the item.
+    created = await prisma.item.create({
+      data: {
+        businessId,
+        sourceStoreCode,
+        name: data.name.trim(),
+        modelName:
+          normalizeOptionalString(data.modelName) || data.name.trim(),
+        deviceCode: normalizeOptionalString(data.deviceCode),
+        sku,
+        barcode,
+        imei,
+
+        categoryId: data.categoryId || null,
+        brandId: data.brandId || null,
+        unitId: data.unitId || null,
+        description: normalizeOptionalString(data.description),
+
+        purchasePrice: toDecimal(data.purchasePrice ?? 0) as any,
+        salePrice: toDecimal(data.salePrice ?? 0) as any,
+        mrp: data.mrp != null ? (toDecimal(data.mrp) as any) : null,
+
+        openingStock: openingStock as any,
+        currentStock: openingStock as any,
+
+        minimumStock: toDecimal(data.minimumStock ?? 0) as any,
+        gstRate: toDecimal(data.gstRate ?? 18) as any,
+        hsnSac: normalizeOptionalString(data.hsnSac),
+        discountPercent: toDecimal(data.discountPercent ?? 0) as any,
+
+        supplierId: data.supplierId || null,
+
+        trackBatch: Boolean(data.trackBatch),
+        trackSerial: true,
+        trackExpiry: Boolean(data.trackExpiry),
+      },
+    });
+
+    // 2. Create its physical inventory unit.
+    await prisma.inventoryUnit.create({
+      data: {
+        businessId,
+        itemId: created.id,
+        itemCode: normalizeOptionalString(data.deviceCode) || sku,
+        imei,
+        status: "AVAILABLE",
+        purchasePrice: toDecimal(data.purchasePrice ?? 0) as any,
+      },
+    });
+
+    // 3. Record opening stock.
+    if (openingStock.gt(0)) {
+      await prisma.stockMovement.create({
+        data: {
+          businessId,
+          itemId: created.id,
+          type: "OPENING",
+          quantityIn: openingStock as any,
+          quantityOut: toDecimal(0) as any,
+          balance: openingStock as any,
+          notes: "Opening stock",
+        },
+      });
+    }
+
+    // 4. Record audit log.
+    await prisma.auditLog.create({
+      data: {
+        businessId,
+        userId: userId || null,
+        action: "CREATE",
+        module: "items",
+        recordId: created.id,
+        recordName: created.name,
+        details: JSON.stringify({
+          sku,
+          barcode,
+          imei,
+          trackSerial: true,
+          openingStock: openingStock.toString(),
+          source: "EXCEL_IMPORT",
+        }),
+      },
+    });
+
+    return created;
+  } catch (error) {
+    // If a later step fails, remove the partially created item
+    // and its dependent records. No Prisma transaction is used.
+    if (created?.id) {
+      try {
+        await prisma.stockMovement.deleteMany({
+          where: { businessId, itemId: created.id },
+        });
+
+        await prisma.inventoryUnit.deleteMany({
+          where: { businessId, itemId: created.id },
+        });
+
+        await prisma.item.deleteMany({
+          where: { businessId, id: created.id },
+        });
+      } catch (cleanupError) {
+        console.error(
+          "Excel item import cleanup failed:",
+          created.id,
+          cleanupError,
+        );
+      }
+    }
+
+    handleItemUniqueError(error);
+  }
+}
+
+/* =========================================================
     UPDATE ITEM
   ========================================================= */
 

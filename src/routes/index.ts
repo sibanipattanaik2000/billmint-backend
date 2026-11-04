@@ -216,6 +216,89 @@ router.get(
     });
   }),
 );
+
+router.post(
+  "/items/bulk",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const requestSchema = z.object({
+      items: z.array(z.unknown()).min(1).max(500),
+    });
+
+    const { items } = requestSchema.parse(req.body);
+
+    const results: Array<{
+      row: number;
+      success: boolean;
+      message?: string;
+    }> = new Array(items.length);
+
+    let nextIndex = 0;
+
+    // Process five items concurrently to avoid overwhelming Neon.
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex++;
+
+        if (index >= items.length) {
+          return;
+        }
+
+        const parsed = itemSchema.safeParse(items[index]);
+
+        if (!parsed.success) {
+          results[index] = {
+            row: index + 2,
+            success: false,
+            message: parsed.error.issues
+              .map((issue) => issue.message)
+              .join(", "),
+          };
+
+          continue;
+        }
+
+        try {
+          await itemsService.createItem(
+            req.businessId!,
+            parsed.data,
+            req.user?.userId,
+          );
+
+          results[index] = {
+            row: index + 2,
+            success: true,
+          };
+        } catch (error) {
+          results[index] = {
+            row: index + 2,
+            success: false,
+            message:
+              error instanceof Error ? error.message : "Unable to create item",
+          };
+        }
+      }
+    };
+
+    const workerCount = Math.min(5, items.length);
+
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    const created = results.filter((item) => item.success).length;
+
+    const failed = results.length - created;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        created,
+        failed,
+        results,
+      },
+    });
+  }),
+);
+
 router.post(
   "/items",
   authenticate,
@@ -231,6 +314,57 @@ router.post(
     res.status(201).json({
       success: true,
       data,
+    });
+  }),
+);
+
+router.post(
+  "/items/bulk-import",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const rows = z.array(itemSchema).min(1).max(500).parse(req.body);
+
+    const created: any[] = [];
+    const failed: Array<{ row: number; name: string; message: string }> = [];
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+
+      try {
+        const item = await itemsService.createImportedItem(
+          req.businessId!,
+          row,
+          req.user?.userId,
+        );
+
+        created.push({
+          row: index + 2,
+          id: item.id,
+          name: item.name,
+          sku: item.sku,
+          imei: item.imei,
+        });
+      } catch (error) {
+        failed.push({
+          row: index + 2,
+          name: row.name,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to import this item",
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      summary: {
+        total: rows.length,
+        created: created.length,
+        failed: failed.length,
+      },
+      created,
+      failed,
     });
   }),
 );
