@@ -80,6 +80,21 @@ function redactBranchInventory<T>(value: T): T {
 
   return value;
 }
+async function protectBranchInventory<T>(
+  businessId: string,
+  data: T,
+): Promise<T> {
+  const business = await prisma.business.findUnique({
+    where: { id: businessId },
+    select: { storeRole: true },
+  });
+
+  if (business?.storeRole === "CENTRAL") {
+    return data;
+  }
+
+  return redactBranchInventory(data);
+}
 router.use("/auth", authRoutes);
 router.use("/business-access", businessAccessRoutes);
 router.use("/purchases", purchasesRoutes);
@@ -232,13 +247,14 @@ router.get(
       lowStock,
     });
 
-    const business = await prisma.business.findUnique({
-      where: { id: req.businessId! },
-      select: { storeRole: true },
-    });
+    // const business = await prisma.business.findUnique({
+    //   where: { id: req.businessId! },
+    //   select: { storeRole: true },
+    // });
+    const responseData = await protectBranchInventory(req.businessId!, data);
 
-    const responseData =
-      business?.storeRole === "CENTRAL" ? data : redactBranchInventory(data);
+    // const responseData =
+    //   business?.storeRole === "CENTRAL" ? data : redactBranchInventory(data);
 
     res.json({
       success: true,
@@ -252,9 +268,19 @@ router.get(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await itemsService.listItemModels(req.businessId!);
 
+    const business = await prisma.business.findUnique({
+      where: { id: req.businessId! },
+      select: { storeRole: true },
+    });
+
+    const responseData =
+      business?.storeRole === "CENTRAL"
+        ? data
+        : redactBranchInventory(data);
+
     res.json({
       success: true,
-      data,
+      data: responseData,
     });
   }),
 );
@@ -422,9 +448,11 @@ router.get(
 
     const data = await itemsService.searchByBarcode(req.businessId!, barcode);
 
+    const responseData = await protectBranchInventory(req.businessId!, data);
+
     res.json({
       success: true,
-      data,
+      data: responseData,
     });
   }),
 );
@@ -437,7 +465,12 @@ router.get(
       String(req.params.sku),
     );
 
-    res.json({ success: true, data });
+    const responseData = await protectBranchInventory(req.businessId!, data);
+
+    res.json({
+      success: true,
+      data: responseData,
+    });
   }),
 );
 router.get(
@@ -449,9 +482,11 @@ router.get(
       String(req.params.imei),
     );
 
+    const responseData = await protectBranchInventory(req.businessId!, data);
+
     res.json({
       success: true,
-      data,
+      data: responseData,
     });
   }),
 );
@@ -985,64 +1020,11 @@ router.get(
       req.businessId!,
     );
 
-    res.json({
-      success: true,
-      data: serializeBigInt(data),
-    });
-  }),
-);
-
-router.get(
-  "/stock-transfers",
-  authenticate,
-  asyncHandler(async (req: AuthRequest, res: Response) => {
-    const data = await stockTransfersService.listStockTransfers(
-      req.businessId!,
-    );
+    const responseData = await protectBranchInventory(req.businessId!, data);
 
     res.json({
       success: true,
-      data: serializeBigInt(data),
-    });
-  }),
-);
-
-router.post(
-  "/stock-transfers",
-  authenticate,
-  asyncHandler(async (req: AuthRequest, res: Response) => {
-    const bodySchema = z.object({
-      toStoreCode: z.string().trim().min(1).max(20),
-      items: z
-        .array(
-          z.object({
-            itemId: z.string().uuid(),
-            inventoryUnitIds: z.array(z.string().uuid()).min(1).max(500),
-          }),
-        )
-        .min(1)
-        .max(100),
-      notes: z.string().trim().max(5000).optional().nullable(),
-    });
-
-    const parsed = bodySchema.safeParse(req.body);
-
-    if (!parsed.success) {
-      throw new AppError(
-        parsed.error.issues.map((issue) => issue.message).join(", "),
-        400,
-      );
-    }
-
-    const data = await stockTransfersService.createStockTransfer(
-      req.businessId!,
-      parsed.data,
-      req.user?.userId,
-    );
-
-    res.status(201).json({
-      success: true,
-      data: serializeBigInt(data),
+      data: serializeBigInt(responseData),
     });
   }),
 );

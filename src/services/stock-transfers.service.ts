@@ -641,7 +641,22 @@ export async function receiveStockTransfer(
             409,
           );
         }
+        const existingImei = unit.imei
+          ? await tx.inventoryUnit.findFirst({
+              where: {
+                businessId: destinationBusinessId,
+                imei: unit.imei,
+              },
+              select: { id: true },
+            })
+          : null;
 
+        if (existingImei) {
+          throw new AppError(
+            `IMEI "${unit.imei}" is already registered in the destination store`,
+            409,
+          );
+        }
         const moved = await tx.inventoryUnit.updateMany({
           where: {
             id: unit.id,
@@ -766,7 +781,7 @@ export async function receiveStockTransfer(
 }
 
 export async function listStockTransfers(businessId: string) {
-  return prisma.stockTransfer.findMany({
+  const transfers = await prisma.stockTransfer.findMany({
     where: {
       OR: [
         { fromBusinessId: businessId },
@@ -821,4 +836,10 @@ export async function listStockTransfers(businessId: string) {
     orderBy: { createdAt: "desc" },
     take: 100,
   });
+
+  return transfers.map((transfer) => ({
+    ...transfer,
+    isIncoming: transfer.toBusinessId === businessId,
+    isOutgoing: transfer.fromBusinessId === businessId,
+  }));
 }

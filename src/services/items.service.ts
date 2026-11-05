@@ -231,7 +231,21 @@ export async function getItem(businessId: string, id: string) {
           name: true,
         },
       },
-
+      inventoryUnits: {
+        orderBy: {
+          createdAt: "asc",
+        },
+        select: {
+          id: true,
+          itemCode: true,
+          imei: true,
+          serialNumber: true,
+          barcode: true,
+          sourceCode: true,
+          status: true,
+          purchasePrice: true,
+        },
+      },
       stockMovements: {
         orderBy: [
           {
@@ -278,6 +292,8 @@ export async function createItem(
   const barcode = normalizeOptionalString(data.barcode);
 
   const imei = normalizeOptionalString(data.imei);
+
+  const sourceCode = normalizeOptionalString(data.sourceCode);
 
   const trackSerial = Boolean(data.trackSerial);
 
@@ -422,6 +438,7 @@ export async function createItem(
             itemId: created.id,
             itemCode: normalizeOptionalString(data.deviceCode) || sku,
             imei,
+            sourceCode,
             status: "AVAILABLE",
             purchasePrice: toDecimal(data.purchasePrice ?? 0) as any,
           },
@@ -465,8 +482,12 @@ export async function createItem(
             sku,
             barcode,
             imei,
+            sourceCode,
             trackSerial,
             openingStock: openingStock.toString(),
+            purchasePrice: data.purchasePrice ?? 0,
+            salePrice: data.salePrice ?? 0,
+            mrp: data.mrp ?? null,
           }),
         },
       });
@@ -537,11 +558,7 @@ export async function createImportedItem(
       where: {
         businessId,
         deletedAt: null,
-        OR: [
-          { sku },
-          { imei },
-          ...(barcode ? [{ barcode }] : []),
-        ],
+        OR: [{ sku }, { imei }, ...(barcode ? [{ barcode }] : [])],
       },
       select: {
         sku: true,
@@ -572,8 +589,7 @@ export async function createImportedItem(
         businessId,
         sourceStoreCode,
         name: data.name.trim(),
-        modelName:
-          normalizeOptionalString(data.modelName) || data.name.trim(),
+        modelName: normalizeOptionalString(data.modelName) || data.name.trim(),
         deviceCode: normalizeOptionalString(data.deviceCode),
         sku,
         barcode,
@@ -1577,6 +1593,8 @@ export async function listItemModels(businessId: string) {
           itemCode: true,
           imei: true,
           serialNumber: true,
+          barcode: true,
+          sourceCode: true,
           status: true,
           purchasePrice: true,
         },

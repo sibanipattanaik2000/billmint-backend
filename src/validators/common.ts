@@ -86,7 +86,8 @@ export const itemSchema = z.object({
 
   // Optional code assigned to an individual physical device.
   deviceCode: z.string().trim().max(100).optional().or(z.literal("")),
-
+    // Source/vendor code assigned to this physical inventory unit.
+  sourceCode: z.string().trim().max(100).optional().or(z.literal("")),
   // IMEI is optional at the generic schema level because
   // services can also be non-serialized products/services.
   // createItem() will enforce it when trackSerial=true.
