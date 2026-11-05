@@ -153,6 +153,20 @@ export async function listItems(
             id: true,
             name: true,
           },
+
+          inventoryUnits: {
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              itemCode: true,
+              imei: true,
+              serialNumber: true,
+              barcode: true,
+              sourceCode: true,
+              status: true,
+              purchasePrice: true,
+            },
+          },
         },
 
         brand: {
@@ -438,6 +452,7 @@ export async function createItem(
             itemId: created.id,
             itemCode: normalizeOptionalString(data.deviceCode) || sku,
             imei,
+            barcode,
             sourceCode,
             status: "AVAILABLE",
             purchasePrice: toDecimal(data.purchasePrice ?? 0) as any,
@@ -533,7 +548,7 @@ export async function createImportedItem(
   }
 
   const barcode = normalizeOptionalString(data.barcode);
-
+  const sourceCode = normalizeOptionalString(data.sourceCode);
   const sourceStoreCode =
     normalizeOptionalString(data.sourceStoreCode)?.toUpperCase() || null;
 
@@ -627,6 +642,8 @@ export async function createImportedItem(
         itemId: created.id,
         itemCode: normalizeOptionalString(data.deviceCode) || sku,
         imei,
+        barcode,
+        sourceCode,
         status: "AVAILABLE",
         purchasePrice: toDecimal(data.purchasePrice ?? 0) as any,
       },
