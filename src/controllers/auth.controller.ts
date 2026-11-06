@@ -14,14 +14,21 @@ export const register = asyncHandler(async (req: AuthRequest, res: Response) => 
 
 export const login = asyncHandler(async (req: AuthRequest, res: Response) => {
   const data = loginSchema.parse(req.body);
+
   const ip = req.ip || req.socket.remoteAddress;
+
   const result = await authService.loginUser(
-    data.userId,
+    data.email,
     data.password,
-    data.storeCode,
     ip,
-  );  setAuthCookie(res, result.token);
-  res.json({ success: true, data: result });
+  );
+
+  setAuthCookie(res, result.token);
+
+  res.json({
+    success: true,
+    data: result,
+  });
 });
 
 export const logout = asyncHandler(async (_req: AuthRequest, res: Response) => {

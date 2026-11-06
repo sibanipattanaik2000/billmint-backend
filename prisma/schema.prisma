@@ -14,7 +14,7 @@ model User {
   userId        String           @unique
   passwordHash  String
   name          String
-  email         String?
+  email         String?          @unique
   phone         String?
   status        UserStatus       @default(ACTIVE)
   lastLoginAt   DateTime?

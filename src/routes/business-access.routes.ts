@@ -172,6 +172,7 @@ router.post(
           country: input.country || "India",
           gstin: input.gstin || null,
           pan: input.pan || null,
+          storeRole: "BRANCH",
         },
       });
 

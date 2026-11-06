@@ -81,6 +81,24 @@ export async function registerBusiness(data: {
   if (existing) {
     throw new AppError("User ID already taken", 409);
   }
+  // Check unique email
+  const normalizedEmail = data.email?.trim().toLowerCase();
+
+  if (!normalizedEmail) {
+    throw new AppError("Email address is required", 400);
+  }
+
+  const existingEmail = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: { id: true },
+  });
+
+  if (existingEmail) {
+    throw new AppError(
+      "This email is already registered. Please log in and create another business.",
+      409,
+    );
+  }
 
   const passwordHash = await hashPassword(data.password);
 
@@ -100,7 +118,7 @@ export async function registerBusiness(data: {
           userId: data.userId,
           passwordHash,
           name: data.ownerName,
-          email: data.email || null,
+          email: normalizedEmail,
           phone: data.phone || null,
         },
       });
@@ -110,7 +128,8 @@ export async function registerBusiness(data: {
         data: {
           name: data.businessName,
           ownerName: data.ownerName,
-          email: data.email || null,
+          email: normalizedEmail,
+          // email: data.email || null,
           phone: data.phone || null,
           gstin: data.gstin || null,
           pan: data.pan || null,
@@ -319,34 +338,45 @@ export async function registerBusiness(data: {
   };
 }
 
-export async function loginUser(
-  userId: string,
-  password: string,
-  storeCode: string,
-  ip?: string,
-) {
+export async function loginUser(email: string, password: string, ip?: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+
   const user = await prisma.user.findUnique({
-    where: { userId },
+    where: {
+      email: normalizedEmail,
+    },
     include: {
       memberships: {
-        where: { status: "ACTIVE" },
+        where: {
+          status: "ACTIVE",
+          business: {
+            deletedAt: null,
+          },
+        },
         include: {
           business: true,
           role: true,
         },
-        orderBy: { joinedAt: "asc" },
+        orderBy: {
+          joinedAt: "asc",
+        },
       },
     },
   });
 
   if (!user || user.deletedAt) {
-    throw new AppError("Invalid User ID or password", 401);
+    throw new AppError("Invalid email or password", 401);
   }
 
-  // Account lock check
   if (user.lockedUntil && user.lockedUntil > new Date()) {
-    const mins = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
-    throw new AppError(`Account locked. Try again in ${mins} minute(s)`, 423);
+    const minutes = Math.ceil(
+      (user.lockedUntil.getTime() - Date.now()) / 60000,
+    );
+
+    throw new AppError(
+      `Account locked. Try again in ${minutes} minute(s)`,
+      423,
+    );
   }
 
   if (user.status !== "ACTIVE") {
@@ -354,37 +384,47 @@ export async function loginUser(
   }
 
   const valid = await verifyPassword(password, user.passwordHash);
+
   if (!valid) {
     const failedLogins = user.failedLogins + 1;
-    const updates: any = { failedLogins };
+
+    const updates: {
+      failedLogins: number;
+      lockedUntil?: Date | null;
+    } = {
+      failedLogins,
+    };
+
     if (failedLogins >= 5) {
-      updates.lockedUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 min
       updates.failedLogins = 0;
+      updates.lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
     }
-    await prisma.user.update({ where: { id: user.id }, data: updates });
-    throw new AppError("Invalid User ID or password", 401);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: updates,
+    });
+
+    throw new AppError("Invalid email or password", 401);
   }
 
   if (user.memberships.length === 0) {
     throw new AppError("No active business membership found", 403);
   }
 
-  const membership = user.memberships.find(
-    (entry) =>
-      entry.business.storeCode.toUpperCase() === storeCode.toUpperCase(),
-  );
+  // Use the first active membership only to establish
+  // the initial authenticated session.
+  // The frontend will ask the user to select a business.
+  const membership = user.memberships[0];
 
-  if (!membership) {
-    throw new AppError("Invalid Store Code or credentials", 401);
-  }
-
-  // Reset failed logins
   await prisma.user.update({
     where: { id: user.id },
-    data: { failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() },
+    data: {
+      failedLogins: 0,
+      lockedUntil: null,
+      lastLoginAt: new Date(),
+    },
   });
-
-  //const membership = user.memberships[0];
 
   const tokenPayload: JwtPayload = {
     userId: user.id,
@@ -396,7 +436,6 @@ export async function loginUser(
 
   const token = signToken(tokenPayload);
 
-  // Audit
   await prisma.auditLog.create({
     data: {
       businessId: membership.businessId,
@@ -407,14 +446,28 @@ export async function loginUser(
     },
   });
 
+  const businesses = user.memberships.map((entry) => ({
+    id: entry.business.id,
+    name: entry.business.name,
+    storeCode: entry.business.storeCode,
+    city: entry.business.city,
+    state: entry.business.state,
+    gstin: entry.business.gstin,
+    setupCompleted: entry.business.setupCompleted,
+    role: entry.role.name,
+    isOwner: entry.isOwner,
+  }));
+
   return {
     token,
+
     user: {
       id: user.id,
       userId: user.userId,
       name: user.name,
       email: user.email,
     },
+
     business: {
       id: membership.business.id,
       name: membership.business.name,
@@ -423,6 +476,9 @@ export async function loginUser(
       gstin: membership.business.gstin,
       storeCode: membership.business.storeCode,
     },
+
+    businesses,
+
     role: membership.role.name,
     isOwner: membership.isOwner,
   };
