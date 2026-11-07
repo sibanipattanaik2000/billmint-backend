@@ -14,16 +14,17 @@ export const register = asyncHandler(async (req: AuthRequest, res: Response) => 
 
 export const login = asyncHandler(async (req: AuthRequest, res: Response) => {
   const data = loginSchema.parse(req.body);
-
   const ip = req.ip || req.socket.remoteAddress;
+  const rememberMe = data.rememberMe === true;
 
   const result = await authService.loginUser(
     data.email,
     data.password,
     ip,
+    rememberMe,
   );
 
-  setAuthCookie(res, result.token);
+  setAuthCookie(res, result.token, rememberMe);
 
   res.json({
     success: true,

@@ -274,9 +274,7 @@ router.get(
     });
 
     const responseData =
-      business?.storeRole === "CENTRAL"
-        ? data
-        : redactBranchInventory(data);
+      business?.storeRole === "CENTRAL" ? data : redactBranchInventory(data);
 
     res.json({
       success: true,
@@ -296,43 +294,105 @@ router.post(
 
     const { items } = requestSchema.parse(req.body);
 
-    const results: Array<{
+    type ImportResultRow = {
       row: number;
       success: boolean;
       message?: string;
-    }> = new Array(items.length);
+    };
+
+    const results: ImportResultRow[] = new Array(items.length);
+
+    const parsedRows: Array<{
+      index: number;
+      data: z.infer<typeof itemSchema>;
+    }> = [];
+
+    const seenSku = new Set<string>();
+    const seenImei = new Set<string>();
+    const seenBarcode = new Set<string>();
+
+    // Validate all rows and detect duplicates before writing anything.
+    items.forEach((rawItem, index) => {
+      const rowNumber = index + 2;
+      const parsed = itemSchema.safeParse(rawItem);
+
+      if (!parsed.success) {
+        results[index] = {
+          row: rowNumber,
+          success: false,
+          message: parsed.error.issues
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+            .join("; "),
+        };
+        return;
+      }
+
+      const item = parsed.data;
+
+      const sku = item.sku?.trim().toUpperCase() || "";
+      const imei = item.imei?.trim() || "";
+      const barcode = item.barcode?.trim().toUpperCase() || "";
+
+      const duplicateFields: string[] = [];
+
+      if (sku && seenSku.has(sku)) {
+        duplicateFields.push(`Item Code "${item.sku}"`);
+      }
+
+      if (imei && seenImei.has(imei)) {
+        duplicateFields.push(`IMEI "${imei}"`);
+      }
+
+      if (barcode && seenBarcode.has(barcode)) {
+        duplicateFields.push(`Barcode "${item.barcode}"`);
+      }
+
+      if (duplicateFields.length > 0) {
+        results[index] = {
+          row: rowNumber,
+          success: false,
+          message: `Duplicate in this spreadsheet: ${duplicateFields.join(", ")}`,
+        };
+        return;
+      }
+
+      if (sku) seenSku.add(sku);
+      if (imei) seenImei.add(imei);
+      if (barcode) seenBarcode.add(barcode);
+
+      parsedRows.push({
+        index,
+        data: item,
+      });
+    });
 
     let nextIndex = 0;
 
-    // Process five items concurrently to avoid overwhelming Neon.
+    // Limit concurrent database transactions to protect the database.
     const worker = async (): Promise<void> => {
       while (true) {
-        const index = nextIndex++;
+        const position = nextIndex++;
 
-        if (index >= items.length) {
+        if (position >= parsedRows.length) {
           return;
         }
 
-        const parsed = itemSchema.safeParse(items[index]);
-
-        if (!parsed.success) {
-          results[index] = {
-            row: index + 2,
-            success: false,
-            message: parsed.error.issues
-              .map((issue) => issue.message)
-              .join(", "),
-          };
-
-          continue;
-        }
+        const { index, data } = parsedRows[position];
 
         try {
-          await itemsService.createItem(
-            req.businessId!,
-            parsed.data,
-            req.user?.userId,
-          );
+          const hasImei = Boolean(data.imei?.trim());
+
+          const created = hasImei
+            ? await itemsService.createImportedItem(
+                req.businessId!,
+                data,
+                req.user?.userId,
+              )
+            : await itemsService.createItem(
+                req.businessId!,
+                data,
+                req.user?.userId,
+              );
 
           results[index] = {
             row: index + 2,
@@ -343,18 +403,19 @@ router.post(
             row: index + 2,
             success: false,
             message:
-              error instanceof Error ? error.message : "Unable to create item",
+              error instanceof Error
+                ? error.message
+                : "Unable to import this item",
           };
         }
       }
     };
 
-    const workerCount = Math.min(5, items.length);
+    const workerCount = Math.min(5, parsedRows.length);
 
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-    const created = results.filter((item) => item.success).length;
-
+    const created = results.filter((result) => result?.success).length;
     const failed = results.length - created;
 
     res.status(200).json({

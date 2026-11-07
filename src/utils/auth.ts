@@ -3,17 +3,17 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { Response } from 'express';
 
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+//const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const SALT_ROUNDS = 12;
 const AUTH_COOKIE_NAME = 'BillMint_token';
-const AUTH_COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
-
+const REMEMBERED_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 export interface JwtPayload {
   userId: string;
   businessId: string;
   memberId: string;
   role: string;
   isOwner: boolean;
+  rememberMe?: boolean;
 }
 
 /**
@@ -86,21 +86,28 @@ export async function verifyPassword(
 /**
  * Sign a JWT using the configured secret.
  */
-export function signToken(payload: JwtPayload): string {
+export function signToken(
+  payload: JwtPayload,
+  rememberMe: boolean = payload.rememberMe !== false,
+): string {
   if (
     !payload ||
     !payload.userId ||
     !payload.businessId ||
     !payload.memberId ||
     !payload.role ||
-    typeof payload.isOwner !== 'boolean'
+    typeof payload.isOwner !== "boolean"
   ) {
-    throw new Error('Invalid authentication payload.');
+    throw new Error("Invalid authentication payload.");
   }
 
-  return jwt.sign(payload, getJwtSecret(), {
-    expiresIn: JWT_EXPIRES_IN,
-  } as jwt.SignOptions);
+  return jwt.sign(
+    { ...payload, rememberMe },
+    getJwtSecret(),
+    {
+      expiresIn: rememberMe ? "7d" : "12h",
+    },
+  );
 }
 
 /**
@@ -136,6 +143,7 @@ export function verifyToken(token: string): JwtPayload {
     memberId: decoded.memberId,
     role: decoded.role,
     isOwner: decoded.isOwner,
+    rememberMe: decoded.rememberMe !== false,
   };
 }
 
@@ -145,15 +153,18 @@ export function verifyToken(token: string): JwtPayload {
 export function setAuthCookie(
   res: Response,
   token: string,
+  rememberMe = true,
 ): void {
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === "production";
 
   res.cookie(AUTH_COOKIE_NAME, token, {
     httpOnly: true,
     secure: isProd,
-    sameSite: isProd ? 'strict' : 'lax',
-    maxAge: AUTH_COOKIE_MAX_AGE,
-    path: '/',
+    sameSite: isProd ? "strict" : "lax",
+    ...(rememberMe
+      ? { maxAge: REMEMBERED_SESSION_MS }
+      : {}),
+    path: "/",
   });
 }
 

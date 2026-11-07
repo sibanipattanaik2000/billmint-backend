@@ -1,4 +1,3 @@
-
 import { Router } from "express";
 import { z } from "zod";
 import prisma from "../utils/prisma";
@@ -259,10 +258,10 @@ router.post(
       memberId: result.membership.id,
       role: result.role.name,
       isOwner: true,
+      rememberMe: req.user?.rememberMe !== false,
     });
 
-    setAuthCookie(res, token);
-
+    setAuthCookie(res, token, req.user?.rememberMe !== false);
     res.status(201).json({
       success: true,
       message: "Business created successfully.",
@@ -279,9 +278,6 @@ router.post(
     });
   }),
 );
-
-
-
 
 /* =========================================================
    LIST ALL BUSINESSES FOR LOGGED-IN USER
@@ -346,8 +342,6 @@ router.get(
   }),
 );
 
-
-
 /* =========================================================
    SWITCH ACTIVE BUSINESS
 ========================================================= */
@@ -406,10 +400,7 @@ router.post(
     });
 
     if (!membership) {
-      throw new AppError(
-        "You do not have access to this business.",
-        403,
-      );
+      throw new AppError("You do not have access to this business.", 403);
     }
 
     // Issue a session for the selected business.
@@ -419,10 +410,10 @@ router.post(
       memberId: membership.id,
       role: membership.role.name,
       isOwner: membership.isOwner,
+      rememberMe: req.user?.rememberMe !== false,
     });
 
-    setAuthCookie(res, token);
-
+    setAuthCookie(res, token, req.user?.rememberMe !== false);
     res.json({
       success: true,
       message: "Business switched successfully.",

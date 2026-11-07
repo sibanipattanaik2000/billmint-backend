@@ -7,7 +7,7 @@ import {
 } from "../utils/auth";
 import { AppError } from "../middleware/errorHandler";
 import { toDecimal } from "../utils/money";
-
+import { randomUUID } from "crypto";
 const DEFAULT_PERMISSIONS = [
   { code: "dashboard.view", name: "View Dashboard", module: "dashboard" },
   { code: "sales.view", name: "View Sales", module: "sales" },
@@ -61,9 +61,8 @@ const DEFAULT_EXPENSE_CATEGORIES = [
 export async function registerBusiness(data: {
   businessName: string;
   ownerName: string;
-  userId: string;
   password: string;
-  email?: string;
+  email: string;
   phone?: string;
   businessType?: string;
   address?: string;
@@ -75,19 +74,19 @@ export async function registerBusiness(data: {
   pan?: string;
 }) {
   // Check unique userId
-  const existing = await prisma.user.findUnique({
-    where: { userId: data.userId },
-  });
-  if (existing) {
-    throw new AppError("User ID already taken", 409);
-  }
+  // const existing = await prisma.user.findUnique({
+  //   where: { userId: data.userId },
+  // });
+  // if (existing) {
+  //   throw new AppError("User ID already taken", 409);
+  // }
   // Check unique email
   const normalizedEmail = data.email?.trim().toLowerCase();
 
   if (!normalizedEmail) {
     throw new AppError("Email address is required", 400);
   }
-
+  const internalUserId = `USR_${randomUUID().replace(/-/g, "").toUpperCase()}`;
   const existingEmail = await prisma.user.findUnique({
     where: { email: normalizedEmail },
     select: { id: true },
@@ -115,7 +114,8 @@ export async function registerBusiness(data: {
       // Create user
       const user = await tx.user.create({
         data: {
-          userId: data.userId,
+          //userId: data.userId,
+          userId: internalUserId,
           passwordHash,
           name: data.ownerName,
           email: normalizedEmail,
@@ -300,7 +300,8 @@ export async function registerBusiness(data: {
           module: "auth",
           recordId: business.id,
           recordName: business.name,
-          details: JSON.stringify({ userId: data.userId }),
+          details: JSON.stringify({ userId: user.userId }),
+          // details: JSON.stringify({ userId: data.userId }),
         },
       });
 
@@ -338,7 +339,12 @@ export async function registerBusiness(data: {
   };
 }
 
-export async function loginUser(email: string, password: string, ip?: string) {
+export async function loginUser(
+  email: string,
+  password: string,
+  ip?: string,
+  rememberMe = true,
+) {
   const normalizedEmail = email.trim().toLowerCase();
 
   const user = await prisma.user.findUnique({
@@ -432,10 +438,10 @@ export async function loginUser(email: string, password: string, ip?: string) {
     memberId: membership.id,
     role: membership.role.name,
     isOwner: membership.isOwner,
+    rememberMe,
   };
 
-  const token = signToken(tokenPayload);
-
+  const token = signToken(tokenPayload, rememberMe);
   await prisma.auditLog.create({
     data: {
       businessId: membership.businessId,

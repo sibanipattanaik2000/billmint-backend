@@ -4,14 +4,14 @@ export const registerSchema = z
   .object({
     businessName: z.string().min(2, "Business name is required").max(200),
     ownerName: z.string().min(2, "Owner name is required").max(100),
-    userId: z
-      .string()
-      .min(3, "User ID must be at least 3 characters")
-      .max(50)
-      .regex(
-        /^[a-zA-Z0-9_]+$/,
-        "User ID can only contain letters, numbers and underscore",
-      ),
+    // userId: z
+    //   .string()
+    //   .min(3, "User ID must be at least 3 characters")
+    //   .max(50)
+    //   .regex(
+    //     /^[a-zA-Z0-9_]+$/,
+    //     "User ID can only contain letters, numbers and underscore",
+    //   ),
     password: z
       .string()
       .min(8, "Password must be at least 8 characters")
