@@ -13,6 +13,7 @@ export interface JwtPayload {
   memberId: string;
   role: string;
   isOwner: boolean;
+  authVersion: number;
   rememberMe?: boolean;
 }
 
@@ -96,7 +97,8 @@ export function signToken(
     !payload.businessId ||
     !payload.memberId ||
     !payload.role ||
-    typeof payload.isOwner !== "boolean"
+    typeof payload.isOwner !== "boolean" ||
+    typeof payload.authVersion !== "number"
   ) {
     throw new Error("Invalid authentication payload.");
   }
@@ -132,7 +134,8 @@ export function verifyToken(token: string): JwtPayload {
     typeof decoded.businessId !== 'string' ||
     typeof decoded.memberId !== 'string' ||
     typeof decoded.role !== 'string' ||
-    typeof decoded.isOwner !== 'boolean'
+    typeof decoded.isOwner !== 'boolean' ||
+    typeof decoded.authVersion !== 'number'
   ) {
     throw new Error('Invalid authentication token payload.');
   }
@@ -143,6 +146,7 @@ export function verifyToken(token: string): JwtPayload {
     memberId: decoded.memberId,
     role: decoded.role,
     isOwner: decoded.isOwner,
+    authVersion: decoded.authVersion,
     rememberMe: decoded.rememberMe !== false,
   };
 }

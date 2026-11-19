@@ -1,9 +1,11 @@
+
 import { Router } from "express";
 import { z } from "zod";
 import prisma from "../utils/prisma";
 import { authenticate, AuthRequest } from "../middleware/auth";
 import { asyncHandler, AppError } from "../middleware/errorHandler";
 import { signToken, setAuthCookie } from "../utils/auth";
+
 const router = Router();
 
 const nullableText = (maxLength: number) =>
@@ -99,6 +101,7 @@ async function requireBusinessOwner(req: AuthRequest) {
     );
   }
 }
+
 /* =========================================================
    CREATE BUSINESS
 ========================================================= */
@@ -147,6 +150,7 @@ router.post(
       select: {
         id: true,
         name: true,
+        authVersion: true,
       },
     });
 
@@ -252,16 +256,20 @@ router.post(
     });
 
     // 7. Switch the session to the newly created business.
+    const rememberMe = req.user.rememberMe !== false;
+
     const token = signToken({
       userId: user.id,
       businessId: result.business.id,
       memberId: result.membership.id,
       role: result.role.name,
       isOwner: true,
-      rememberMe: req.user?.rememberMe !== false,
+      authVersion: user.authVersion,
+      rememberMe,
     });
 
-    setAuthCookie(res, token, req.user?.rememberMe !== false);
+    setAuthCookie(res, token, rememberMe);
+
     res.status(201).json({
       success: true,
       message: "Business created successfully.",
@@ -365,7 +373,11 @@ router.post(
       );
     }
 
-    const userId = req.user!.userId;
+    if (!req.user?.userId) {
+      throw new AppError("Authentication required.", 401);
+    }
+
+    const userId = req.user.userId;
     const { businessId } = parsed.data;
 
     // Only allow switching to a business where this user
@@ -403,17 +415,21 @@ router.post(
       throw new AppError("You do not have access to this business.", 403);
     }
 
-    // Issue a session for the selected business.
+    // Preserve the authenticated user's session version and remember-me choice.
+    const rememberMe = req.user.rememberMe !== false;
+
     const token = signToken({
-      userId,
+      userId: req.user.userId,
       businessId: membership.businessId,
       memberId: membership.id,
       role: membership.role.name,
       isOwner: membership.isOwner,
-      rememberMe: req.user?.rememberMe !== false,
+      authVersion: req.user.authVersion,
+      rememberMe,
     });
 
-    setAuthCookie(res, token, req.user?.rememberMe !== false);
+    setAuthCookie(res, token, rememberMe);
+
     res.json({
       success: true,
       message: "Business switched successfully.",
@@ -427,6 +443,10 @@ router.post(
     });
   }),
 );
+
+/* =========================================================
+   GET ACTIVE BUSINESS DETAILS
+========================================================= */
 
 router.get(
   "/",
@@ -487,6 +507,10 @@ router.get(
   }),
 );
 
+/* =========================================================
+   UPDATE ACTIVE BUSINESS DETAILS AND SETTINGS
+========================================================= */
+
 router.patch(
   "/",
   authenticate,
@@ -501,6 +525,7 @@ router.patch(
         400,
       );
     }
+
     const businessId = req.businessId!;
     const { business: businessInput, settings: settingsInput } = parsed.data;
 

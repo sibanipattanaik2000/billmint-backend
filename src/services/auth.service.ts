@@ -317,7 +317,9 @@ export async function registerBusiness(data: {
     businessId: result.business.id,
     memberId: result.member.id,
     role: result.role.name,
+    authVersion: result.user.authVersion,
     isOwner: true,
+    
   };
 
   const token = signToken(tokenPayload);
@@ -438,6 +440,7 @@ export async function loginUser(
     memberId: membership.id,
     role: membership.role.name,
     isOwner: membership.isOwner,
+    authVersion: user.authVersion,
     rememberMe,
   };
 

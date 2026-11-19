@@ -10,23 +10,25 @@ datasource db {
 }
 
 model User {
-  id            String           @id @default(uuid())
-  userId        String           @unique
-  passwordHash  String
-  name          String
-  email         String?          @unique
-  phone         String?
-  status        UserStatus       @default(ACTIVE)
-  lastLoginAt   DateTime?
-  failedLogins  Int              @default(0)
-  lockedUntil   DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  deletedAt     DateTime?
-  auditLogs     AuditLog[]
-  memberships   BusinessMember[]
-  notifications Notification[]
-  sessions      Session[]
+  id                 String               @id @default(uuid())
+  userId             String               @unique
+  passwordHash       String
+  name               String
+  email              String?              @unique
+  phone              String?
+  status             UserStatus           @default(ACTIVE)
+  lastLoginAt        DateTime?
+  failedLogins       Int                  @default(0)
+  lockedUntil        DateTime?
+  authVersion        Int                  @default(0)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  deletedAt          DateTime?
+  auditLogs          AuditLog[]
+  memberships        BusinessMember[]
+  notifications      Notification[]
+  sessions           Session[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([userId])
   @@index([email])
@@ -47,7 +49,20 @@ model Session {
   @@index([userId])
   @@map("sessions")
 }
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
 
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
 model Role {
   id          String           @id @default(uuid())
   businessId  String

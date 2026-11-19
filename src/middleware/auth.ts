@@ -36,7 +36,10 @@ export async function authenticate(
         deletedAt: null,
         status: "ACTIVE",
       },
-      select: { id: true },
+      select: {
+        id: true,
+        authVersion: true,
+      },
     });
 
     if (!user) {
@@ -45,7 +48,12 @@ export async function authenticate(
         message: "User not found or inactive",
       });
     }
-
+    if (user.authVersion !== payload.authVersion) {
+      return res.status(401).json({
+        success: false,
+        message: "Your session has expired. Please log in again.",
+      });
+    }
     const member = await prisma.businessMember.findFirst({
       where: {
         id: payload.memberId,
@@ -83,11 +91,7 @@ export async function authenticate(
  * Owner status alone is not permission to bypass sensitive checks.
  */
 export function requirePermission(...codes: string[]) {
-  return async (
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user || !req.businessId) {
       return res.status(401).json({
         success: false,
@@ -124,15 +128,11 @@ export function requirePermission(...codes: string[]) {
       }
 
       const userPermissions = new Set(
-        membership.role.permissions.map(
-          (entry) => entry.permission.code,
-        ),
+        membership.role.permissions.map((entry) => entry.permission.code),
       );
 
       const allowed = codes.every(
-        (code) =>
-          userPermissions.has(code) ||
-          userPermissions.has("*"),
+        (code) => userPermissions.has(code) || userPermissions.has("*"),
       );
 
       if (!allowed) {
@@ -159,11 +159,7 @@ export function requirePermission(...codes: string[]) {
  * and cannot be bypassed merely because a user is an owner.
  */
 export function requireStoreRole(...allowedRoles: string[]) {
-  return async (
-    req: AuthRequest,
-    res: Response,
-    next: NextFunction,
-  ) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.businessId) {
       return res.status(401).json({
         success: false,
