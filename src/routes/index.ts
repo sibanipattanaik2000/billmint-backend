@@ -58,6 +58,10 @@ function redactBranchInventory<T>(value: T): T {
     "purchaseItemId",
     "costPrice",
     "landedCost",
+
+    // Selling prices are central-branch-only in item details.
+    "salePrice",
+    "mrp",
   ]);
 
   if (Array.isArray(value)) {

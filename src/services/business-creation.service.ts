@@ -1,4 +1,3 @@
-
 import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
 import { JwtPayload, signToken } from "../utils/auth";
@@ -49,6 +48,7 @@ export async function createBusinessForUser(
       email: true,
       deletedAt: true,
       status: true,
+      authVersion: true,
     },
   });
 
@@ -61,10 +61,7 @@ export async function createBusinessForUser(
       const allPermissions = await tx.permission.findMany();
 
       if (allPermissions.length === 0) {
-        throw new AppError(
-          "System permissions are not configured",
-          500,
-        );
+        throw new AppError("System permissions are not configured", 500);
       }
 
       const business = await tx.business.create({
@@ -270,6 +267,7 @@ export async function createBusinessForUser(
     memberId: result.member.id,
     role: result.role.name,
     isOwner: true,
+    authVersion: user.authVersion,
   };
 
   return {

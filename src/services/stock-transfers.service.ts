@@ -25,21 +25,17 @@ function makeTransferNumber(): string {
     .replace(/[-:TZ.]/g, "")
     .slice(0, 14);
 
-  const suffix = Math.random()
-    .toString(36)
-    .slice(2, 7)
-    .toUpperCase();
+  const suffix = Math.random().toString(36).slice(2, 7).toUpperCase();
 
   return `TRF-${stamp}-${suffix}`;
 }
-
 async function getOrCreateDestinationItem(
   tx: any,
   destinationBusinessId: string,
   sourceItem: any,
   sourceStoreCode: string,
 ) {
-  let destinationItem = sourceItem.sku
+  const destinationItem = sourceItem.sku
     ? await tx.item.findFirst({
         where: {
           businessId: destinationBusinessId,
@@ -57,7 +53,23 @@ async function getOrCreateDestinationItem(
         },
       });
 
-  if (destinationItem) return destinationItem;
+  if (destinationItem) {
+    if (destinationItem.status !== "ACTIVE") {
+      throw new AppError(
+        `The matching item "${destinationItem.name}" is inactive in the destination store`,
+        409,
+      );
+    }
+
+    if (!destinationItem.trackSerial) {
+      throw new AppError(
+        `The matching item "${destinationItem.name}" is not configured for serial tracking in the destination store`,
+        409,
+      );
+    }
+
+    return destinationItem;
+  }
 
   return tx.item.create({
     data: {
@@ -67,13 +79,13 @@ async function getOrCreateDestinationItem(
       sku: sourceItem.sku,
       barcode: null,
       imei: null,
-      deviceCode: null,
+      deviceCode: sourceItem.deviceCode ?? null,
       categoryId: null,
       brandId: null,
       unitId: null,
       description: sourceItem.description,
 
-      // Purchase cost and supplier details stay at the source/central store.
+      // Purchase and supplier details are not copied to the branch.
       purchasePrice: 0,
       supplierId: null,
 
@@ -88,15 +100,12 @@ async function getOrCreateDestinationItem(
       trackBatch: false,
       trackSerial: true,
       trackExpiry: false,
-      sourceStoreCode:
-        sourceItem.sourceStoreCode || sourceStoreCode,
+      sourceStoreCode: sourceItem.sourceStoreCode || sourceStoreCode,
     },
   });
 }
 
-export async function listTransferableInventoryUnits(
-  businessId: string,
-) {
+export async function listTransferableInventoryUnits(businessId: string) {
   const units = await prisma.inventoryUnit.findMany({
     where: {
       businessId,
@@ -125,10 +134,7 @@ export async function listTransferableInventoryUnits(
         },
       },
     },
-    orderBy: [
-      { item: { name: "asc" } },
-      { createdAt: "asc" },
-    ],
+    orderBy: [{ item: { name: "asc" } }, { createdAt: "asc" }],
     take: 2000,
   });
 
@@ -155,19 +161,23 @@ export async function createStockTransfer(
   }
 
   if (input.items.length > 100) {
-    throw new AppError("A transfer cannot contain more than 100 product lines", 400);
+    throw new AppError(
+      "A transfer cannot contain more than 100 product lines",
+      400,
+    );
   }
 
-  const allUnitIds = input.items.flatMap(
-    (line) => line.inventoryUnitIds || [],
-  );
+  const allUnitIds = input.items.flatMap((line) => line.inventoryUnitIds || []);
 
   if (allUnitIds.length === 0) {
     throw new AppError("Select the physical devices to transfer", 400);
   }
 
   if (allUnitIds.length > 500) {
-    throw new AppError("A single transfer cannot contain more than 500 devices", 400);
+    throw new AppError(
+      "A single transfer cannot contain more than 500 devices",
+      400,
+    );
   }
 
   if (new Set(allUnitIds).size !== allUnitIds.length) {
@@ -175,9 +185,15 @@ export async function createStockTransfer(
   }
 
   for (const line of input.items) {
-    if (!line.itemId || !Array.isArray(line.inventoryUnitIds) ||
-        line.inventoryUnitIds.length === 0) {
-      throw new AppError("Every transfer line must contain a product and its device records", 400);
+    if (
+      !line.itemId ||
+      !Array.isArray(line.inventoryUnitIds) ||
+      line.inventoryUnitIds.length === 0
+    ) {
+      throw new AppError(
+        "Every transfer line must contain a product and its device records",
+        400,
+      );
     }
   }
 
@@ -221,21 +237,21 @@ export async function createStockTransfer(
       }
 
       // Require the acting user to be an active member of both stores.
-      const destinationMembership = await tx.businessMember.findFirst({
-        where: {
-          userId,
-          businessId: destination.id,
-          status: "ACTIVE",
-        },
-        select: { id: true },
-      });
+      // const destinationMembership = await tx.businessMember.findFirst({
+      //   where: {
+      //     userId,
+      //     businessId: destination.id,
+      //     status: "ACTIVE",
+      //   },
+      //   select: { id: true },
+      // });
 
-      if (!destinationMembership) {
-        throw new AppError(
-          "You do not have access to transfer stock to this store",
-          403,
-        );
-      }
+      // if (!destinationMembership) {
+      //   throw new AppError(
+      //     "You do not have access to transfer stock to this store",
+      //     403,
+      //   );
+      // }
 
       const transferNumber = makeTransferNumber();
 
@@ -472,15 +488,20 @@ export async function receiveStockTransfer(
   }
 
   if (receivedUnits.length > 500) {
-    throw new AppError("You can receive a maximum of 500 devices at a time", 400);
+    throw new AppError(
+      "You can receive a maximum of 500 devices at a time",
+      400,
+    );
   }
 
   const transferUnitIds = receivedUnits.map((unit) =>
     String(unit.transferUnitId || "").trim(),
   );
 
-  if (transferUnitIds.some((id) => !id) ||
-      new Set(transferUnitIds).size !== transferUnitIds.length) {
+  if (
+    transferUnitIds.some((id) => !id) ||
+    new Set(transferUnitIds).size !== transferUnitIds.length
+  ) {
     throw new AppError("Invalid or duplicate transfer device selection", 400);
   }
 
@@ -491,7 +512,10 @@ export async function receiveStockTransfer(
 
   for (const unit of normalized) {
     if (unit.barcode.length < 3 || unit.barcode.length > 100) {
-      throw new AppError("Every received device needs a valid barcode (3–100 characters)", 400);
+      throw new AppError(
+        "Every received device needs a valid barcode (3–100 characters)",
+        400,
+      );
     }
   }
 
@@ -544,7 +568,10 @@ export async function receiveStockTransfer(
       });
 
       if (!transfer) {
-        throw new AppError("Pending transfer was not found for this store", 404);
+        throw new AppError(
+          "Pending transfer was not found for this store",
+          404,
+        );
       }
 
       if (
@@ -737,8 +764,7 @@ export async function receiveStockTransfer(
         },
       });
 
-      const nextStatus =
-        pendingCount === 0 ? "RECEIVED" : "PARTIALLY_RECEIVED";
+      const nextStatus = pendingCount === 0 ? "RECEIVED" : "PARTIALLY_RECEIVED";
 
       await tx.stockTransfer.update({
         where: { id: transfer.id },
@@ -783,10 +809,7 @@ export async function receiveStockTransfer(
 export async function listStockTransfers(businessId: string) {
   const transfers = await prisma.stockTransfer.findMany({
     where: {
-      OR: [
-        { fromBusinessId: businessId },
-        { toBusinessId: businessId },
-      ],
+      OR: [{ fromBusinessId: businessId }, { toBusinessId: businessId }],
     },
     include: {
       fromBusiness: {

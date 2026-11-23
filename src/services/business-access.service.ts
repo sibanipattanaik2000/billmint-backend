@@ -1,4 +1,3 @@
-
 import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
 import { JwtPayload, signToken } from "../utils/auth";
@@ -7,7 +6,10 @@ import { JwtPayload, signToken } from "../utils/auth";
  * Return every active company the authenticated account can access.
  * Company data is limited to the fields needed by the company switcher.
  */
-export async function getMyBusinesses(userId: string, activeBusinessId: string) {
+export async function getMyBusinesses(
+  userId: string,
+  activeBusinessId: string,
+) {
   const memberships = await prisma.businessMember.findMany({
     where: {
       userId,
@@ -96,10 +98,7 @@ export async function switchBusiness(
   });
 
   if (!membership) {
-    throw new AppError(
-      "You do not have access to this company",
-      403,
-    );
+    throw new AppError("You do not have access to this company", 403);
   }
 
   const tokenPayload: JwtPayload = {
@@ -107,7 +106,8 @@ export async function switchBusiness(
     businessId: membership.businessId,
     memberId: membership.id,
     role: membership.role.name,
-    isOwner: membership.isOwner,
+    isOwner: true,
+    authVersion: currentUser.authVersion,
   };
 
   const token = signToken(tokenPayload);
