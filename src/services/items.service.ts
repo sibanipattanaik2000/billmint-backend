@@ -530,7 +530,7 @@ export async function createImportedItem(
   if (typeof data.name !== "string" || !data.name.trim()) {
     throw new AppError("Item name is required", 400);
   }
-  const sku = normalizeOptionalString(data.sku);  
+  const sku = normalizeOptionalString(data.sku);
   const imei = normalizeOptionalString(data.imei);
 
   if (!sku) {
@@ -1080,6 +1080,7 @@ export async function deleteItem(
     BARCODE SEARCH
   ========================================================= */
 
+
 export async function searchByBarcode(businessId: string, barcode: string) {
   const normalized = barcode.trim();
 
@@ -1087,17 +1088,66 @@ export async function searchByBarcode(businessId: string, barcode: string) {
     throw new AppError("Barcode is required", 400);
   }
 
+  // 1. First search for a branch-specific physical inventory barcode.
+  const inventoryUnit = await prisma.inventoryUnit.findFirst({
+    where: {
+      businessId,
+      barcode: normalized,
+      status: "AVAILABLE",
+      item: {
+        deletedAt: null,
+        status: "ACTIVE",
+      },
+    },
+    include: {
+      item: {
+        include: {
+          unit: {
+            select: {
+              id: true,
+              name: true,
+              shortName: true,
+            },
+          },
+          category: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          brand: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (inventoryUnit) {
+    return {
+      ...inventoryUnit.item,
+      inventoryUnit: {
+        id: inventoryUnit.id,
+        barcode: inventoryUnit.barcode,
+        imei: inventoryUnit.imei,
+        itemCode: inventoryUnit.itemCode,
+        sourceCode: inventoryUnit.sourceCode,
+        status: inventoryUnit.status,
+      },
+    };
+  }
+
+  // 2. If no physical-unit barcode matches, search the item-level barcode.
   const item = await prisma.item.findFirst({
     where: {
       businessId,
-
       barcode: normalized,
-
       deletedAt: null,
-
       status: "ACTIVE",
     },
-
     include: {
       unit: {
         select: {
@@ -1106,14 +1156,12 @@ export async function searchByBarcode(businessId: string, barcode: string) {
           shortName: true,
         },
       },
-
       category: {
         select: {
           id: true,
           name: true,
         },
       },
-
       brand: {
         select: {
           id: true,
@@ -1129,6 +1177,7 @@ export async function searchByBarcode(businessId: string, barcode: string) {
 
   return item;
 }
+
 
 /* =========================================================
     ITEM CODE / SKU SEARCH

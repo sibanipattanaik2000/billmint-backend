@@ -29,6 +29,75 @@ function makeTransferNumber(): string {
 
   return `TRF-${stamp}-${suffix}`;
 }
+
+async function resolveDestinationMetadata(
+  tx: any,
+  destinationBusinessId: string,
+  sourceItem: any,
+  onlyMissing?: {
+    category: boolean;
+    brand: boolean;
+    unit: boolean;
+  },
+) {
+  const [category, brand, unit] = await Promise.all([
+    sourceItem.category?.name && (!onlyMissing || onlyMissing.category)
+      ? tx.itemCategory.upsert({
+          where: {
+            businessId_name: {
+              businessId: destinationBusinessId,
+              name: sourceItem.category.name,
+            },
+          },
+          update: {},
+          create: {
+            businessId: destinationBusinessId,
+            name: sourceItem.category.name,
+          },
+        })
+      : null,
+
+    sourceItem.brand?.name && (!onlyMissing || onlyMissing.brand)
+      ? tx.brand.upsert({
+          where: {
+            businessId_name: {
+              businessId: destinationBusinessId,
+              name: sourceItem.brand.name,
+            },
+          },
+          update: {},
+          create: {
+            businessId: destinationBusinessId,
+            name: sourceItem.brand.name,
+          },
+        })
+      : null,
+
+    sourceItem.unit?.name && (!onlyMissing || onlyMissing.unit)
+      ? tx.unit.upsert({
+          where: {
+            businessId_name: {
+              businessId: destinationBusinessId,
+              name: sourceItem.unit.name,
+            },
+          },
+          update: {},
+          create: {
+            businessId: destinationBusinessId,
+            name: sourceItem.unit.name,
+            shortName: sourceItem.unit.shortName || sourceItem.unit.name,
+          },
+        })
+      : null,
+  ]);
+
+  return {
+    categoryId: category?.id ?? null,
+    brandId: brand?.id ?? null,
+    unitId: unit?.id ?? null,
+  };
+}
+
 async function getOrCreateDestinationItem(
   tx: any,
   destinationBusinessId: string,
@@ -68,8 +137,60 @@ async function getOrCreateDestinationItem(
       );
     }
 
-    return destinationItem;
+    const metadata = await resolveDestinationMetadata(
+      tx,
+      destinationBusinessId,
+      sourceItem,
+      {
+        category: !destinationItem.categoryId,
+        brand: !destinationItem.brandId,
+        unit: !destinationItem.unitId,
+      },
+    );
+
+    const patch: Record<string, any> = {};
+
+    if (!destinationItem.categoryId && metadata.categoryId) {
+      patch.categoryId = metadata.categoryId;
+    }
+
+    if (!destinationItem.brandId && metadata.brandId) {
+      patch.brandId = metadata.brandId;
+    }
+
+    if (!destinationItem.unitId && metadata.unitId) {
+      patch.unitId = metadata.unitId;
+    }
+
+    if (!destinationItem.modelName && sourceItem.modelName) {
+      patch.modelName = sourceItem.modelName;
+    }
+
+    if (!destinationItem.description && sourceItem.description) {
+      patch.description = sourceItem.description;
+    }
+
+    if (!destinationItem.hsnSac && sourceItem.hsnSac) {
+      patch.hsnSac = sourceItem.hsnSac;
+    }
+
+    if (!destinationItem.imageUrl && sourceItem.imageUrl) {
+      patch.imageUrl = sourceItem.imageUrl;
+    }
+
+    return Object.keys(patch).length
+      ? tx.item.update({
+          where: { id: destinationItem.id },
+          data: patch,
+        })
+      : destinationItem;
   }
+
+  const metadata = await resolveDestinationMetadata(
+    tx,
+    destinationBusinessId,
+    sourceItem,
+  );
 
   return tx.item.create({
     data: {
@@ -77,29 +198,38 @@ async function getOrCreateDestinationItem(
       name: sourceItem.name,
       modelName: sourceItem.modelName,
       sku: sourceItem.sku,
+
       barcode: null,
       imei: null,
+
       deviceCode: sourceItem.deviceCode ?? null,
-      categoryId: null,
-      brandId: null,
-      unitId: null,
+
+      categoryId: metadata.categoryId,
+      brandId: metadata.brandId,
+      unitId: metadata.unitId,
+
       description: sourceItem.description,
 
-      // Purchase and supplier details are not copied to the branch.
+      // Never copy purchase cost or supplier ownership.
       purchasePrice: 0,
       supplierId: null,
 
       salePrice: sourceItem.salePrice,
       mrp: sourceItem.mrp,
+      imageUrl: sourceItem.imageUrl,
+
       openingStock: 0,
       currentStock: 0,
       minimumStock: sourceItem.minimumStock,
+
       gstRate: sourceItem.gstRate,
       hsnSac: sourceItem.hsnSac,
       discountPercent: sourceItem.discountPercent,
-      trackBatch: false,
+
+      trackBatch: sourceItem.trackBatch,
       trackSerial: true,
-      trackExpiry: false,
+      trackExpiry: sourceItem.trackExpiry,
+
       sourceStoreCode: sourceItem.sourceStoreCode || sourceStoreCode,
     },
   });
@@ -235,24 +365,6 @@ export async function createStockTransfer(
       if (sourceBusiness.id === destination.id) {
         throw new AppError("Cannot transfer stock to the same store", 400);
       }
-
-      // Require the acting user to be an active member of both stores.
-      // const destinationMembership = await tx.businessMember.findFirst({
-      //   where: {
-      //     userId,
-      //     businessId: destination.id,
-      //     status: "ACTIVE",
-      //   },
-      //   select: { id: true },
-      // });
-
-      // if (!destinationMembership) {
-      //   throw new AppError(
-      //     "You do not have access to transfer stock to this store",
-      //     403,
-      //   );
-      // }
-
       const transferNumber = makeTransferNumber();
 
       const transfer = await tx.stockTransfer.create({
@@ -282,6 +394,11 @@ export async function createStockTransfer(
             businessId: fromBusinessId,
             deletedAt: null,
             status: "ACTIVE",
+          },
+          include: {
+            category: { select: { name: true } },
+            brand: { select: { name: true } },
+            unit: { select: { name: true, shortName: true } },
           },
         });
 
@@ -644,6 +761,24 @@ export async function receiveStockTransfer(
           },
           select: { id: true },
         });
+        const existingProductBarcode = await tx.item.findFirst({
+          where: {
+            businessId: destinationBusinessId,
+            barcode: entry.barcode,
+            deletedAt: null,
+          },
+          select: {
+            id: true,
+            name: true,
+          },
+        });
+
+        if (existingProductBarcode) {
+          throw new AppError(
+            `Barcode "${entry.barcode}" is already assigned to product "${existingProductBarcode.name}"`,
+            409,
+          );
+        }
 
         if (existingBarcode) {
           throw new AppError(
@@ -813,10 +948,16 @@ export async function listStockTransfers(businessId: string) {
     },
     include: {
       fromBusiness: {
-        select: { name: true, storeCode: true },
+        select: {
+          name: true,
+          storeCode: true,
+        },
       },
       toBusiness: {
-        select: { name: true, storeCode: true },
+        select: {
+          name: true,
+          storeCode: true,
+        },
       },
       items: {
         include: {
@@ -826,6 +967,22 @@ export async function listStockTransfers(businessId: string) {
               name: true,
               sku: true,
               modelName: true,
+              description: true,
+              hsnSac: true,
+              gstRate: true,
+              imageUrl: true,
+              category: {
+                select: { name: true },
+              },
+              brand: {
+                select: { name: true },
+              },
+              unit: {
+                select: {
+                  name: true,
+                  shortName: true,
+                },
+              },
             },
           },
           destinationItem: {
@@ -834,6 +991,22 @@ export async function listStockTransfers(businessId: string) {
               name: true,
               sku: true,
               modelName: true,
+              description: true,
+              hsnSac: true,
+              gstRate: true,
+              imageUrl: true,
+              category: {
+                select: { name: true },
+              },
+              brand: {
+                select: { name: true },
+              },
+              unit: {
+                select: {
+                  name: true,
+                  shortName: true,
+                },
+              },
             },
           },
           transferUnits: {
