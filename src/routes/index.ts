@@ -1025,6 +1025,7 @@ router.get(
 router.get(
   "/stock-transfers",
   authenticate,
+  requirePermission("inventory.view"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await stockTransfersService.listStockTransfers(
       req.businessId!,
@@ -1040,6 +1041,7 @@ router.get(
 router.post(
   "/stock-transfers",
   authenticate,
+  requirePermission("inventory.adjust"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const bodySchema = z.object({
       toStoreCode: z.string().trim().min(1).max(20),
@@ -1080,6 +1082,7 @@ router.post(
 router.get(
   "/stock-transfers/available-units",
   authenticate,
+  requirePermission("inventory.view"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await stockTransfersService.listTransferableInventoryUnits(
       req.businessId!,
@@ -1097,6 +1100,7 @@ router.get(
 router.post(
   "/stock-transfers/:id/receive",
   authenticate,
+  requirePermission("inventory.adjust"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const bodySchema = z.object({
       units: z
