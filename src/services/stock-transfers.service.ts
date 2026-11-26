@@ -15,7 +15,7 @@ type TransferInput = {
 
 type ReceiveUnitInput = {
   transferUnitId: string;
-  barcode: string;
+  imei: string;
 };
 
 async function runSerializableTransaction<T>(
@@ -651,22 +651,19 @@ export async function receiveStockTransfer(
 
   const normalized = receivedUnits.map((unit) => ({
     transferUnitId: String(unit.transferUnitId).trim(),
-    barcode: String(unit.barcode || "").trim(),
+    imei: String(unit.imei || "").trim(),
   }));
 
   for (const unit of normalized) {
-    if (unit.barcode.length < 3 || unit.barcode.length > 100) {
-      throw new AppError(
-        "Every received device needs a valid barcode (3–100 characters)",
-        400,
-      );
+    if (!/^\d{15}$/.test(unit.imei)) {
+      throw new AppError("Enter a valid 15-digit IMEI for every device", 400);
     }
   }
 
-  const barcodes = normalized.map((unit) => unit.barcode);
+  const imeis = normalized.map((unit) => unit.imei);
 
-  if (new Set(barcodes).size !== barcodes.length) {
-    throw new AppError("Duplicate barcode entered in this receipt", 409);
+  if (new Set(imeis).size !== imeis.length) {
+    throw new AppError("Duplicate IMEI entered in this receipt", 409);
   }
 
   return runSerializableTransaction(() =>
@@ -816,18 +813,25 @@ export async function receiveStockTransfer(
             );
           }
 
-          const existingBarcode = await tx.inventoryUnit.findFirst({
+          const existingImei = await tx.inventoryUnit.findFirst({
             where: {
               businessId: destinationBusinessId,
-              barcode: entry.barcode,
+              imei: entry.imei,
             },
             select: { id: true },
           });
 
-          const existingProductBarcode = await tx.item.findFirst({
+          if (existingImei) {
+            throw new AppError(
+              `IMEI "${entry.imei}" is already registered in this store`,
+              409,
+            );
+          }
+
+          const existingProductImei = await tx.item.findFirst({
             where: {
               businessId: destinationBusinessId,
-              barcode: entry.barcode,
+              imei: entry.imei,
             },
             select: {
               id: true,
@@ -835,16 +839,9 @@ export async function receiveStockTransfer(
             },
           });
 
-          if (existingProductBarcode) {
+          if (existingProductImei) {
             throw new AppError(
-              `Barcode "${entry.barcode}" is already assigned to product "${existingProductBarcode.name}"`,
-              409,
-            );
-          }
-
-          if (existingBarcode) {
-            throw new AppError(
-              `Barcode "${entry.barcode}" is already assigned in this store`,
+              `IMEI "${entry.imei}" is already assigned to product "${existingProductImei.name}"`,
               409,
             );
           }
@@ -866,23 +863,6 @@ export async function receiveStockTransfer(
             );
           }
 
-          const existingImei = unit.imei
-            ? await tx.inventoryUnit.findFirst({
-                where: {
-                  businessId: destinationBusinessId,
-                  imei: unit.imei,
-                },
-                select: { id: true },
-              })
-            : null;
-
-          if (existingImei) {
-            throw new AppError(
-              `IMEI "${unit.imei}" is already registered in the destination store`,
-              409,
-            );
-          }
-
           const moved = await tx.inventoryUnit.updateMany({
             where: {
               id: unit.id,
@@ -894,7 +874,7 @@ export async function receiveStockTransfer(
               businessId: destinationBusinessId,
               itemId: transferItem.destinationItemId,
               status: "AVAILABLE",
-              barcode: entry.barcode,
+              imei: entry.imei,
             },
           });
 
@@ -909,7 +889,6 @@ export async function receiveStockTransfer(
             where: { id: transferUnit.id },
             data: {
               status: "RECEIVED",
-              barcode: entry.barcode,
               receivedAt: new Date(),
               receivedById: userId,
             },
@@ -986,7 +965,7 @@ export async function receiveStockTransfer(
             details: JSON.stringify({
               receivedCount: normalized.length,
               pendingCount,
-              barcodes: normalized.map((unit) => unit.barcode),
+              imeis: normalized.map((unit) => unit.imei),
             }),
           },
         });

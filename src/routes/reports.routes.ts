@@ -1,8 +1,13 @@
 import { Router, Response } from "express";
 import { z } from "zod";
-import { authenticate, AuthRequest } from "../middleware/auth";
+import {
+  authenticate,
+  AuthRequest,
+  requireStoreRole,
+} from "../middleware/auth";
 import { AppError, asyncHandler } from "../middleware/errorHandler";
 import * as reportsService from "../services/reports.service";
+import prisma from "../utils/prisma";
 
 const router = Router();
 
@@ -95,6 +100,7 @@ router.get(
 
 router.get(
   "/purchase-summary",
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await reportsService.getPurchaseSummary(
       req.businessId!,
@@ -110,7 +116,34 @@ router.get(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await reportsService.getStockSummary(req.businessId!);
 
-    res.json({ success: true, data });
+    const business = await prisma.business.findUnique({
+      where: { id: req.businessId! },
+      select: { storeRole: true },
+    });
+
+    if (business?.storeRole === "CENTRAL") {
+      res.json({ success: true, data });
+      return;
+    }
+
+    const { stockCostValue: _hiddenCost, ...safeSummary } = data.summary;
+
+    const safeData = data.data.map(
+      ({
+        purchasePrice: _hiddenPurchasePrice,
+        stockCostValue: _hiddenItemCost,
+        ...item
+      }) => item,
+    );
+
+    res.json({
+      success: true,
+      data: {
+        ...data,
+        summary: safeSummary,
+        data: safeData,
+      },
+    });
   }),
 );
 
@@ -119,7 +152,17 @@ router.get(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await reportsService.getLowStockReport(req.businessId!);
 
-    res.json({ success: true, data });
+    const business = await prisma.business.findUnique({
+      where: { id: req.businessId! },
+      select: { storeRole: true },
+    });
+
+    const responseData =
+      business?.storeRole === "CENTRAL"
+        ? data
+        : data.map(({ stockCostValue: _hiddenCost, ...item }) => item);
+
+    res.json({ success: true, data: responseData });
   }),
 );
 
@@ -137,6 +180,7 @@ router.get(
 
 router.get(
   "/payable",
+  requireStoreRole("CENTRAL"),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await reportsService.getPayableReport(
       req.businessId!,

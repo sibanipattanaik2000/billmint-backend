@@ -125,12 +125,34 @@ router.use("/stores", storesRoutes);
 router.get(
   "/dashboard",
   authenticate,
+
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const data = await dashboardService.getDashboard(req.businessId!);
 
+    const business = await prisma.business.findUnique({
+      where: { id: req.businessId! },
+      select: { storeRole: true },
+    });
+
+    // Only the CENTRAL store (Siripur) can see purchase-cost information.
+    const responseData =
+      business?.storeRole === "CENTRAL"
+        ? data
+        : {
+            ...data,
+            cards: {
+              ...data.cards,
+              todayPurchase: undefined,
+              todayPurchaseCount: undefined,
+              payables: undefined,
+              stockValue: undefined,
+            },
+            recentPurchases: undefined,
+          };
+
     res.json({
       success: true,
-      data: serializeBigInt(data),
+      data: serializeBigInt(responseData),
     });
   }),
 );
@@ -1107,7 +1129,10 @@ router.post(
         .array(
           z.object({
             transferUnitId: z.string().uuid(),
-            barcode: z.string().trim().min(3).max(100),
+            imei: z
+              .string()
+              .trim()
+              .regex(/^\d{15}$/, "IMEI must contain exactly 15 digits"),
           }),
         )
         .min(1)
