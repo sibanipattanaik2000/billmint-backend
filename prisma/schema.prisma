@@ -10,24 +10,24 @@ datasource db {
 }
 
 model User {
-  id                 String               @id @default(uuid())
-  userId             String               @unique
-  passwordHash       String
-  name               String
-  email              String?              @unique
-  phone              String?
-  status             UserStatus           @default(ACTIVE)
-  lastLoginAt        DateTime?
-  failedLogins       Int                  @default(0)
-  lockedUntil        DateTime?
-  authVersion        Int                  @default(0)
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
-  deletedAt          DateTime?
-  auditLogs          AuditLog[]
-  memberships        BusinessMember[]
-  notifications      Notification[]
-  sessions           Session[]
+  id                  String               @id @default(uuid())
+  userId              String               @unique
+  passwordHash        String
+  name                String
+  email               String?              @unique
+  phone               String?
+  status              UserStatus           @default(ACTIVE)
+  lastLoginAt         DateTime?
+  failedLogins        Int                  @default(0)
+  lockedUntil         DateTime?
+  authVersion         Int                  @default(0)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  deletedAt           DateTime?
+  auditLogs           AuditLog[]
+  memberships         BusinessMember[]
+  notifications       Notification[]
+  sessions            Session[]
   passwordResetTokens PasswordResetToken[]
 
   @@index([userId])
@@ -49,13 +49,14 @@ model Session {
   @@index([userId])
   @@map("sessions")
 }
+
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -63,6 +64,7 @@ model PasswordResetToken {
   @@index([expiresAt])
   @@map("password_reset_tokens")
 }
+
 model Role {
   id          String           @id @default(uuid())
   businessId  String
@@ -577,17 +579,20 @@ model StockTransfer {
 }
 
 model StockTransferItem {
-  id                String   @id @default(uuid())
-  transferId        String
-  sourceItemId      String
-  destinationItemId String
-  quantity          Decimal  @db.Decimal(18, 3)
-  inventoryUnitIds  String[] @default([])
-  createdAt         DateTime @default(now())
+  id           String @id @default(uuid())
+  transferId   String
+  sourceItemId String
+
+  // Created only when the receiving branch accepts the device.
+  destinationItemId String?
+
+  quantity         Decimal  @db.Decimal(18, 3)
+  inventoryUnitIds String[] @default([])
+  createdAt        DateTime @default(now())
 
   transfer        StockTransfer       @relation(fields: [transferId], references: [id], onDelete: Cascade)
   sourceItem      Item                @relation("TransferSourceItem", fields: [sourceItemId], references: [id], onDelete: Restrict)
-  destinationItem Item                @relation("TransferDestinationItem", fields: [destinationItemId], references: [id], onDelete: Restrict)
+  destinationItem Item?               @relation("TransferDestinationItem", fields: [destinationItemId], references: [id], onDelete: Restrict)
   transferUnits   StockTransferUnit[]
 
   @@index([transferId])

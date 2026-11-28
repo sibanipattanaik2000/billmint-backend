@@ -1,6 +1,7 @@
 import prisma from "../utils/prisma";
 import { AppError } from "../middleware/errorHandler";
 import { toDecimal } from "../utils/money";
+import { randomUUID } from "crypto";
 
 type TransferLineInput = {
   itemId: string;
@@ -412,7 +413,6 @@ export async function createStockTransfer(
           itemName: string;
           quantity: number;
           sourceItemId: string;
-          destinationItemId: string;
           imeis: string[];
         }> = [];
 
@@ -475,14 +475,6 @@ export async function createStockTransfer(
               400,
             );
           }
-
-          const destinationItem = await getOrCreateDestinationItem(
-            tx,
-            destination.id,
-            sourceItem,
-            sourceBusiness.storeCode,
-          );
-
           const quantity = toDecimal(units.length);
 
           const stockDeducted = await tx.item.updateMany({
@@ -526,7 +518,6 @@ export async function createStockTransfer(
             data: {
               transferId: transfer.id,
               sourceItemId: sourceItem.id,
-              destinationItemId: destinationItem.id,
               quantity,
               inventoryUnitIds: units.map((unit) => unit.id),
             },
@@ -563,7 +554,6 @@ export async function createStockTransfer(
             itemName: sourceItem.name,
             quantity: units.length,
             sourceItemId: sourceItem.id,
-            destinationItemId: destinationItem.id,
             imeis: units.map((unit) => unit.imei!),
           });
         }
@@ -628,39 +618,31 @@ export async function receiveStockTransfer(
   }
 
   if (!Array.isArray(receivedUnits) || receivedUnits.length === 0) {
-    throw new AppError("Enter a barcode for at least one device", 400);
+    throw new AppError("Enter an IMEI for at least one device", 400);
   }
 
   if (receivedUnits.length > 500) {
-    throw new AppError(
-      "You can receive a maximum of 500 devices at a time",
-      400,
-    );
+    throw new AppError("Maximum 500 devices per receipt", 400);
   }
 
-  const transferUnitIds = receivedUnits.map((unit) =>
-    String(unit.transferUnitId || "").trim(),
-  );
+  const normalized = receivedUnits.map((unit) => ({
+    transferUnitId: String(unit.transferUnitId || "").trim(),
+    imei: String(unit.imei || "").trim(),
+  }));
+
+  const transferUnitIds = normalized.map((unit) => unit.transferUnitId);
+  const imeis = normalized.map((unit) => unit.imei);
 
   if (
     transferUnitIds.some((id) => !id) ||
     new Set(transferUnitIds).size !== transferUnitIds.length
   ) {
-    throw new AppError("Invalid or duplicate transfer device selection", 400);
+    throw new AppError("Invalid or duplicate device selection", 400);
   }
 
-  const normalized = receivedUnits.map((unit) => ({
-    transferUnitId: String(unit.transferUnitId).trim(),
-    imei: String(unit.imei || "").trim(),
-  }));
-
-  for (const unit of normalized) {
-    if (!/^\d{15}$/.test(unit.imei)) {
-      throw new AppError("Enter a valid 15-digit IMEI for every device", 400);
-    }
+  if (imeis.some((imei) => !/^\d{15}$/.test(imei))) {
+    throw new AppError("Every device must have a valid 15-digit IMEI", 400);
   }
-
-  const imeis = normalized.map((unit) => unit.imei);
 
   if (new Set(imeis).size !== imeis.length) {
     throw new AppError("Duplicate IMEI entered in this receipt", 409);
@@ -676,15 +658,52 @@ export async function receiveStockTransfer(
           },
           include: {
             fromBusiness: {
-              select: { id: true, name: true, storeCode: true },
+              select: {
+                id: true,
+                name: true,
+                storeCode: true,
+              },
             },
             toBusiness: {
-              select: { id: true, name: true, storeCode: true },
+              select: {
+                id: true,
+                name: true,
+                storeCode: true,
+              },
             },
             items: {
               include: {
                 sourceItem: {
-                  select: { id: true, name: true },
+                  select: {
+                    id: true,
+                    name: true,
+                    modelName: true,
+                    sku: true,
+                    deviceCode: true,
+                    description: true,
+                    hsnSac: true,
+                    imageUrl: true,
+                    minimumStock: true,
+                    gstRate: true,
+                    discountPercent: true,
+                    salePrice: true,
+                    mrp: true,
+                    sourceStoreCode: true,
+                    trackBatch: true,
+                    trackExpiry: true,
+                    category: {
+                      select: { name: true },
+                    },
+                    brand: {
+                      select: { name: true },
+                    },
+                    unit: {
+                      select: {
+                        name: true,
+                        shortName: true,
+                      },
+                    },
+                  },
                 },
                 destinationItem: {
                   select: {
@@ -727,7 +746,7 @@ export async function receiveStockTransfer(
           transfer.status !== "PARTIALLY_RECEIVED"
         ) {
           throw new AppError(
-            `This transfer cannot be received because its status is ${transfer.status}`,
+            `Transfer cannot be received in ${transfer.status} status`,
             409,
           );
         }
@@ -749,58 +768,39 @@ export async function receiveStockTransfer(
           }
         }
 
+        // Cache destination products so multiple devices
+        // belonging to the same transfer line reuse one Item.
+        const destinationItemCache = new Map<string, any>();
+
         const acceptedByItem = new Map<
           string,
           { count: number; itemName: string }
         >();
+
+        const receivedDeviceAudit: Array<{
+          transferUnitId: string;
+          previousImei: string | null;
+          receivedImei: string;
+          itemCode: string;
+          barcode: string;
+        }> = [];
 
         for (const entry of normalized) {
           const match = transferUnitMap.get(entry.transferUnitId);
 
           if (!match) {
             throw new AppError(
-              "A selected device does not belong to this transfer",
+              "Selected device does not belong to this transfer",
               400,
             );
           }
 
-          // These declarations fix the missing transferUnit/transferItem errors.
           const { transferUnit, transferItem } = match;
-
-          const destinationItem = transferItem.destinationItem;
-
-          if (
-            !destinationItem ||
-            destinationItem.businessId !== destinationBusinessId
-          ) {
-            throw new AppError(
-              "The destination product is not assigned to the receiving store",
-              409,
-            );
-          }
-
-          if (destinationItem.status !== "ACTIVE") {
-            throw new AppError(
-              `The destination product "${destinationItem.name}" is inactive. Reactivate it before receiving stock.`,
-              409,
-            );
-          }
-
-          if (!destinationItem.trackSerial) {
-            throw new AppError(
-              `The destination product "${destinationItem.name}" is not configured for serial tracking`,
-              409,
-            );
-          }
+          const unit = transferUnit.inventoryUnit;
 
           if (transferUnit.status !== "PENDING") {
-            throw new AppError(
-              `Device ${transferUnit.inventoryUnit.imei || ""} has already been received`,
-              409,
-            );
+            throw new AppError("This device has already been received", 409);
           }
-
-          const unit = transferUnit.inventoryUnit;
 
           if (
             unit.businessId !== transfer.fromBusinessId ||
@@ -808,11 +808,58 @@ export async function receiveStockTransfer(
             unit.status !== "IN_TRANSIT"
           ) {
             throw new AppError(
-              "The physical device is not in the expected source-store, product or in-transit state",
+              "Device is not in the expected in-transit state",
               409,
             );
           }
 
+          // Create the destination product only now,
+          // when the receiving branch accepts its first device.
+          let destinationItem =
+            transferItem.destinationItem ??
+            destinationItemCache.get(transferItem.id) ??
+            null;
+
+          if (!destinationItem) {
+            destinationItem = await getOrCreateDestinationItem(
+              tx,
+              destinationBusinessId,
+              transferItem.sourceItem,
+              transfer.fromBusiness.storeCode,
+            );
+
+            await tx.stockTransferItem.update({
+              where: { id: transferItem.id },
+              data: {
+                destinationItemId: destinationItem.id,
+              },
+            });
+
+            destinationItemCache.set(transferItem.id, destinationItem);
+          }
+
+          if (
+            !destinationItem ||
+            destinationItem.businessId !== destinationBusinessId
+          ) {
+            throw new AppError(
+              "Destination product is not assigned to this store",
+              409,
+            );
+          }
+
+          if (destinationItem.status !== "ACTIVE") {
+            throw new AppError("Destination product is inactive", 409);
+          }
+
+          if (!destinationItem.trackSerial) {
+            throw new AppError(
+              "Destination product must support serial tracking",
+              409,
+            );
+          }
+
+          // Validate the new receiving IMEI.
           const existingImei = await tx.inventoryUnit.findFirst({
             where: {
               businessId: destinationBusinessId,
@@ -823,7 +870,7 @@ export async function receiveStockTransfer(
 
           if (existingImei) {
             throw new AppError(
-              `IMEI "${entry.imei}" is already registered in this store`,
+              `IMEI ${entry.imei} already exists in this store`,
               409,
             );
           }
@@ -833,36 +880,29 @@ export async function receiveStockTransfer(
               businessId: destinationBusinessId,
               imei: entry.imei,
             },
-            select: {
-              id: true,
-              name: true,
-            },
+            select: { id: true },
           });
 
           if (existingProductImei) {
             throw new AppError(
-              `IMEI "${entry.imei}" is already assigned to product "${existingProductImei.name}"`,
+              `IMEI ${entry.imei} is already assigned to an item`,
               409,
             );
           }
 
-          const existingItemCode = unit.itemCode
-            ? await tx.inventoryUnit.findFirst({
-                where: {
-                  businessId: destinationBusinessId,
-                  itemCode: unit.itemCode,
-                },
-                select: { id: true },
-              })
-            : null;
+          // Generate new identifiers for the receiving branch.
+          // Original sourceCode is intentionally preserved.
+          const suffix = randomUUID()
+            .replace(/-/g, "")
+            .slice(0, 12)
+            .toUpperCase();
 
-          if (existingItemCode) {
-            throw new AppError(
-              `Device item code "${unit.itemCode}" already exists in the destination store`,
-              409,
-            );
-          }
+          const receivingItemCode = `${transfer.toBusiness.storeCode}-${suffix}`;
 
+          const receivingBarcode = `${transfer.toBusiness.storeCode}-BC-${suffix}`;
+
+          // Move the SAME physical inventory record.
+          // Do not create another inventoryUnit.
           const moved = await tx.inventoryUnit.updateMany({
             where: {
               id: unit.id,
@@ -872,9 +912,11 @@ export async function receiveStockTransfer(
             },
             data: {
               businessId: destinationBusinessId,
-              itemId: transferItem.destinationItemId,
+              itemId: destinationItem.id,
               status: "AVAILABLE",
               imei: entry.imei,
+              itemCode: receivingItemCode,
+              barcode: receivingBarcode,
             },
           });
 
@@ -891,17 +933,27 @@ export async function receiveStockTransfer(
               status: "RECEIVED",
               receivedAt: new Date(),
               receivedById: userId,
+              barcode: receivingBarcode,
             },
           });
 
-          const current = acceptedByItem.get(transferItem.destinationItemId);
+          const current = acceptedByItem.get(destinationItem.id);
 
-          acceptedByItem.set(transferItem.destinationItemId, {
+          acceptedByItem.set(destinationItem.id, {
             count: (current?.count || 0) + 1,
             itemName: destinationItem.name,
           });
+
+          receivedDeviceAudit.push({
+            transferUnitId: transferUnit.id,
+            previousImei: unit.imei,
+            receivedImei: entry.imei,
+            itemCode: receivingItemCode,
+            barcode: receivingBarcode,
+          });
         }
 
+        // Increase stock only for successfully received devices.
         for (const [destinationItemId, accepted] of acceptedByItem) {
           await tx.item.update({
             where: { id: destinationItemId },
@@ -914,9 +966,7 @@ export async function receiveStockTransfer(
 
           const destinationItem = await tx.item.findUniqueOrThrow({
             where: { id: destinationItemId },
-            select: {
-              currentStock: true,
-            },
+            select: { currentStock: true },
           });
 
           await tx.stockMovement.create({
@@ -965,7 +1015,7 @@ export async function receiveStockTransfer(
             details: JSON.stringify({
               receivedCount: normalized.length,
               pendingCount,
-              imeis: normalized.map((unit) => unit.imei),
+              devices: receivedDeviceAudit,
             }),
           },
         });
@@ -1016,6 +1066,8 @@ export async function listStockTransfers(businessId: string) {
               description: true,
               hsnSac: true,
               gstRate: true,
+              salePrice: true,
+              mrp: true,
               imageUrl: true,
               category: {
                 select: { name: true },
@@ -1038,6 +1090,8 @@ export async function listStockTransfers(businessId: string) {
               sku: true,
               modelName: true,
               description: true,
+              salePrice: true,
+              mrp: true,
               hsnSac: true,
               gstRate: true,
               imageUrl: true,
